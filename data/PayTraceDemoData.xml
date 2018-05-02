@@ -9,7 +9,7 @@
 
 
             <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo" 
-            	transactionUrl="" username="" 
-            	password="" integratorID="" apiVersion="v1"
-            	/>
+                  transactionUrl="" username="" 
+                  password="" integratorID="" apiVersion="v1"
+                  />
 </entity-facade-xml>

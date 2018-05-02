@@ -1,9 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
-	<service verb="payTrace" noun="login">
+   	<service verb="authorize" noun="Payment">
+   		<in-parameters>
+            <parameter name="paymentGatewayConfigId"/>
+            <parameter name="paymentId"/>
+        </in-parameters>
+        <out-parameters>
+			<parameter name="responseString" type="Map">
+			</parameter>
+			<parameter name="token">
+			</parameter>
+		</out-parameters>
     	<actions>
-    		
+			<entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+            <if condition="payment == null"><return message="Payment ${paymentId} not found"/></if>
+            <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+            <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
+                <return error="true" message="Cannot authorize payment ${paymentId}, not a Credit Card payment."/>
+            </if>
+
+			<if condition="!cardSecurityCode">
+                <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
+                <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
+            </if>
+            <script>
+            	<![CDATA[requestString = """{
+    				"amount":"${payment.amount}",
+    				"credit_card":{
+        				"number":"4111111111111111",
+        				"expiration_month":"12",
+        				"expiration_year":"2020"
+    				},
+    				"csc":"999",
+    				"billing_address":{
+        			"name":"Steve Smith",
+        			"street_address":"8320 E. West St.",
+        			"city":"Spokane",
+        			"state":"WA",
+        			"zip":"85284"
+    				}
+				}"""]]>	
+			</script>
+			<entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
+    		<if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+
+            <service-call name="PayTrace.PayTraceServices.payTrace#login" in-map="context" out-map="token"/>
+			<set field="responseString" 
+			from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/v1/transactions/authorization/keyed', requestString, 'application/json',token.toString())"/>
+    	</actions>
+   	</service>
+
+
+	<service verb="payTrace" noun="login">
+		<in-parameters>
+            <parameter name="paymentGatewayConfigId"/>
+        </in-parameters>
+		<out-parameters>
+			<parameter name="token">
+			</parameter>
+		</out-parameters>
+    	<actions>
+    		<entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
+    		<if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+    	    <script><![CDATA[requestString = """{
+				"grant_type": "password",
+				"username": "${pgpt.username}",
+				"password": "${pgpt.password}"
+				}"""]]>	
+			</script>
+    		<set field="token" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/oauth/token', requestString, 'application/json')"/>
     	</actions>
 	</service>
 
