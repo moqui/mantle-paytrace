@@ -7,9 +7,7 @@
             releaseServiceName=""
             refundServiceName=""/>
 
-
-            <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo" 
-                  transactionUrl="" username="" 
-                  password="" integratorID="" apiVersion="v1"
-                  />
+      <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo" 
+            transactionUrl="" username="" 
+            password="" integratorID="" apiVersion="v1"/>
 </entity-facade-xml>
