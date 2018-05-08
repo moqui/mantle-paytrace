@@ -17,18 +17,18 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- These services are based on the PayTrace API, version 1. See: http://help.paytrace.com/api -->
 
     <service verb="store" noun="CustomerPaymentMethod" authenticate="anonymous-all">
-    	<in-parameters>
+        <in-parameters>
             <parameter name="paymentMethodId" required="true"/>
             <parameter name="validateSecurityCode"/>
             <parameter name="paymentId"/>
             <parameter name="paymentGatewayConfigId"><description>If not specified gets from PaymentMethod or PayTracePaymentGatewayConfigId user preference</description></parameter>
         </in-parameters>
         <actions>
-        	<entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
+            <entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
 
-        	<if condition="creditCard == null"><return/></if>
+            <if condition="creditCard == null"><return/></if>
             <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
- 			<!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
+            <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
             <if condition="!paymentGatewayConfigId"><set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/></if>
             <!-- then try from PayTracePaymentGatewayConfigId preference -->
             <if condition="!paymentGatewayConfigId">
@@ -36,14 +36,14 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="!paymentGatewayConfigId"><log level="warn" message="In store#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTracePaymentGatewayConfigId user preference found"/><return/></if>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
-    		<if condition="pgpt == null">
-    			<!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
+            <if condition="pgpt == null">
+            <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
                 <log message="Not saving payment method ${paymentMethodId} with PayTrace, no 
                 PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
                 <return/>
-    		</if>
+            </if>
 
-    		<set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
+            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
 
             <!-- get billing contact info, use for any not set on PaymentMethod -->
             <service-call name="mantle.party.ContactServices.get#PartyContactInfo" out-map="billingContactInfo"
@@ -64,7 +64,7 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="emailContactMech" from="paymentMethod.'Email#mantle.party.contact.ContactMech'"/>
             <if condition="emailContactMech == null"><set field="emailContactMech" from="billingContactInfo.emailContactMech"/></if>
 
-			<!-- credit card data -->
+            <!-- credit card data -->
             <set field="expireMonth" from="creditCard.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null"/>
             <set field="expireYear" from="creditCard.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null"/>
             <set field="expireDateFormatted" value="${expireYear}-${expireMonth}"/>
@@ -72,48 +72,47 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="cardNumber" from="creditCard.cardNumber"/>
 
             <script>
-            	<![CDATA[requestString = """{
-    				"customer_id":"${party.partyId}",
-    				"credit_card":{
-        				"number":"${cardNumber}",
-        				"expiration_month":"${expireMonth}",
-        				"expiration_year":"${expireYear}"
-    				},
-    				"billing_address":{
-        				"name":"${paymentMethod.firstNameOnAccount} ${paymentMethod.lastNameOnAccount}",
-        				"street_address":"${postalAddress.address1}",
-        				"city":"${postalAddress.city}",
-        				"state":"${postalAddress.stateProvinceGeoId}",
-        				"zip":"${postalAddress.postalCode}"
-    				}
-					}"""]]>	
-			</script>
+                <![CDATA[requestString = """{
+                    "customer_id":"${party.partyId}",
+                    "credit_card":{
+                        "number":"${cardNumber}",
+                        "expiration_month":"${expireMonth}",
+                        "expiration_year":"${expireYear}"
+                    },
+                    "billing_address":{
+                        "name":"${paymentMethod.firstNameOnAccount} ${paymentMethod.lastNameOnAccount}",
+                        "street_address":"${postalAddress.address1}",
+                        "city":"${postalAddress.city}",
+                        "state":"${postalAddress.stateProvinceGeoId}",
+                        "zip":"${postalAddress.postalCode}"
+                    }
+                }"""]]>	
+            </script>
 
             <if condition="paymentMethod.gatewayCimId"><then>
                 <!-- have a payment profile, call updateCustomerProfile -->
                 <set field="url" value="/customer/update"/>
-				
-			</then><else>
-				   	<!-- no payment profile but we have a customer profile, call createCustomerProfile -->
-					<set field="url" value="/customer/create"/>
-					</else>
-			</if>
+                </then><else>
+                    <!-- no payment profile but we have a customer profile, call createCustomerProfile -->
+                    <set field="url" value="/customer/create"/>
+                    </else>
+            </if>
 
-			<entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
-    		<if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
+            <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
             <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
 
-			<set field="responseString" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion + url, requestString, 'application/json',token.toString())"/>
+            <set field="responseString" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion + url, requestString, 'application/json',token.toString())"/>
 
-			<set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
+            <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
             <set field="responseCode" from="responseNode.success"/>
             <set field="reasonCode" from="responseNode.response_code"/>
             <set field="reasonMessage" from="responseNode.status_message"/>
 
             <if condition="!responseCode || !'true'.equalsIgnoreCase(responseCode)">
-            	<log level="warn" message="Error saving PayTrace info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
-            	<service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                <log level="warn" message="Error saving PayTrace info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
+                <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                         in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:'PgoStoreCim',
                             paymentMethodId:paymentMethodId, paymentId:paymentId, transactionDate:ec.user.nowTimestamp,
                             responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage, resultSuccess:'N', resultError:'Y']"/>
@@ -142,7 +141,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <entity-update value-field="paymentMethod"/>
             </else></if>
 
-			<!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode -->
+            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode -->
             <set field="creditCard.cardSecurityCode" from="null"/>
             <set field="creditCard.cardNumber"
                     from="'*'.padRight(creditCard.cardNumber.length() - 4, '*') + creditCard.cardNumber.substring(creditCard.cardNumber.length() - 4, creditCard.cardNumber.length())"/>
