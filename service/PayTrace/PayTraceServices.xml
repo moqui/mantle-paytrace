@@ -72,22 +72,22 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="cardNumber" from="creditCard.cardNumber"/>
 
             <script>
-            		<![CDATA[requestString = """{
-    					"customer_id":"${party.partyId}",
-    					"credit_card":{
-        					"number":"${cardNumber}",
-        					"expiration_month":"${expireMonth}",
-        					"expiration_year":"${expireYear}"
-    					},
-    					"billing_address":{
-        					"name":"${paymentMethod.firstNameOnAccount} ${paymentMethod.lastNameOnAccount}",
-        					"street_address":"${postalAddress.address1}",
-        					"city":"${postalAddress.city}",
-        					"state":"${postalAddress.stateProvinceGeoId}",
-        					"zip":"${postalAddress.postalCode}"
-    					}
+            	<![CDATA[requestString = """{
+    				"customer_id":"${party.partyId}",
+    				"credit_card":{
+        				"number":"${cardNumber}",
+        				"expiration_month":"${expireMonth}",
+        				"expiration_year":"${expireYear}"
+    				},
+    				"billing_address":{
+        				"name":"${paymentMethod.firstNameOnAccount} ${paymentMethod.lastNameOnAccount}",
+        				"street_address":"${postalAddress.address1}",
+        				"city":"${postalAddress.city}",
+        				"state":"${postalAddress.stateProvinceGeoId}",
+        				"zip":"${postalAddress.postalCode}"
+    				}
 					}"""]]>	
-				</script>
+			</script>
 
             <if condition="paymentMethod.gatewayCimId"><then>
                 <!-- have a payment profile, call updateCustomerProfile -->
@@ -149,5 +149,4 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-update value-field="creditCard"/>
         </actions>
     </service>
-
 </services>

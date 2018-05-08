@@ -19,8 +19,7 @@ along with this software (see the LICENSE.md file). If not, see
    	<service verb="authorize" noun="Payment">
    		<implements service="mantle.account.PaymentServices.authorize#Payment"/>
         <out-parameters>
-			<parameter name="responseString" type="Map">
-			</parameter>
+			<parameter name="responseString" type="Map"/>
 		</out-parameters>
     	<actions>
 			<entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -117,7 +116,6 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
                 <return error="true" message="Cannot authorize and capture payment ${paymentId}, not a Credit Card payment."/></if>
-
 
             <if condition="!cardSecurityCode">
                 <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>

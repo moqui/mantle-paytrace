@@ -11,7 +11,6 @@
             transactionUrl="" username="" 
             password="" integratorID="" apiVersion="v1"/>
 
-
     <!-- these are the global settings for CIM since it is system-wide and not store-specific -->
     <moqui.security.UserGroupPreference userGroupId="ALL_USERS" preferenceKey="PayTraceEnabled" preferenceValue="false"/>
     <moqui.security.UserGroupPreference userGroupId="ALL_USERS" preferenceKey="PayTracePaymentGatewayConfigId"
