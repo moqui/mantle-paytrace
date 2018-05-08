@@ -1,4 +1,4 @@
-    <?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
     <!--
     This software is in the public domain under CC0 1.0 Universal plus a 
     Grant of Patent License.
@@ -29,8 +29,8 @@
                     <return error="true" message="Cannot authorize payment ${paymentId}, not a Credit Card payment."/>
                 </if>
                 
+                <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
                 <if condition="!cardSecurityCode">
-                    <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
                     <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
                 </if>
                 <if condition="cardSecurityCode == null"><return error="true" message="Cannot authorize payment ${paymentId}, must include a cardSecurityCode."/></if>
@@ -178,7 +178,7 @@
                             "expiration_month":"${creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null}",
                             "expiration_year":"${creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null}"
                         },
-                        "csc": "${cardSecurityCode ? cardSecurityCode: '999'}",
+                        "csc": "${cardSecurityCode ? cardSecurityCode: ''}",
                         "billing_address":{
                         "name":"${postalAddress?.toName}",
                         "street_address":"${postalAddress?.address1}",
@@ -195,6 +195,48 @@
                 <set field="responseString" 
                 from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/refund/keyed', requestString, 'application/json',token.toString())"/>
 
+            </actions>
+        </service>
+        <service verb="release" noun="Payment">
+            <implements service="mantle.account.PaymentServices.release#Payment"/>
+            <actions>
+                <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+                <if condition="payment == null"><return message="Payment ${paymentId} not found"/></if>
+                <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+                <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
+                    <return error="true" message="Cannot release authorization for payment ${paymentId}, not a Credit Card payment."/>
+                </if>
+                <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
+                <if condition="!paymentMethod.gatewayCimId">
+                    <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod"
+                            in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
+                    <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+                </if>
+                <!-- get party after CIM check so that gatewayCimId will be populated -->
+                <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
+                <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
+                <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
+ 
+                <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
+                <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+
+                <set field="paymentRefNum" from="payment.paymentRefNum"/>
+                <if condition="!paymentRefNum">
+                     <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
+                     <if condition="!paymentGatewayResponse"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
+                    <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
+                </if>
+                <if condition="!paymentRefNum"><return error="true" message="Could not find authorization transaction ID (reference number) for Payment ${paymentId}"/></if>
+
+                <script><![CDATA[requestString = """{
+                    "transaction_id":"${paymentRefNum}"
+                    }"""]]> 
+                </script>
+
+                <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+                <set field="responseString" 
+                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/authorization/capture', requestString, 'application/json',token.toString())"/>
+                
             </actions>
         </service>
         <service verb="payTrace" noun="login">
@@ -216,4 +258,4 @@
                 <set field="token" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/oauth/token', requestString, 'application/json')"/>
             </actions>
         </service>
-    </services>
+    </services>   

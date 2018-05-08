@@ -25,7 +25,7 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
-
+             
             <if condition="creditCard == null"><return/></if>
             <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
             <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
@@ -80,10 +80,10 @@ along with this software (see the LICENSE.md file). If not, see
                         "expiration_year":"${expireYear}"
                     },
                     "billing_address":{
-                        "name":"${paymentMethod.firstNameOnAccount} ${paymentMethod.lastNameOnAccount}",
+                        "name":"${paymentMethod.titleOnAccount}",
                         "street_address":"${postalAddress.address1}",
                         "city":"${postalAddress.city}",
-                        "state":"${postalAddress.stateProvinceGeoId}",
+                        "state":"${postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null}",
                         "zip":"${postalAddress.postalCode}"
                     }
                 }"""]]>	
@@ -110,13 +110,13 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="reasonCode" from="responseNode.response_code"/>
             <set field="reasonMessage" from="responseNode.status_message"/>
 
-            <if condition="!responseCode || !'true'.equalsIgnoreCase(responseCode)">
+            <if condition="!responseCode || true != responseCode">
                 <log level="warn" message="Error saving PayTrace info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
                 <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                         in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:'PgoStoreCim',
                             paymentMethodId:paymentMethodId, paymentId:paymentId, transactionDate:ec.user.nowTimestamp,
                             responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage, resultSuccess:'N', resultError:'Y']"/>
-                <return message="Could not save payment method ${paymentMethodId}, message: ${reasonMessage}"/>
+                <return message="Could not save payment method ${paymentMethodId}, message: ${reasonMessage} error: ${responseNode}"/>
             </if>
 
             <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
@@ -141,11 +141,11 @@ along with this software (see the LICENSE.md file). If not, see
                 <entity-update value-field="paymentMethod"/>
             </else></if>
 
-            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode -->
+            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode 
             <set field="creditCard.cardSecurityCode" from="null"/>
             <set field="creditCard.cardNumber"
                     from="'*'.padRight(creditCard.cardNumber.length() - 4, '*') + creditCard.cardNumber.substring(creditCard.cardNumber.length() - 4, creditCard.cardNumber.length())"/>
-            <entity-update value-field="creditCard"/>
+            <entity-update value-field="creditCard"/>-->
         </actions>
     </service>
 </services>

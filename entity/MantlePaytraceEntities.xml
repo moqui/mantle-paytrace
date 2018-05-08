@@ -18,7 +18,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="transactionUrl" type="text-medium"><description>Transaction URL</description></field>
         <field name="username" type="text-medium" encrypt="true"><description>PayTrace API login (username)</description></field>
         <field name="password" type="text-medium" encrypt="true"><description>PayTrace API login (password)</description></field>
-        <field name="integratorID" type="text-medium" encrypt="true">
+        <field name="integratorId" type="text-medium" encrypt="true">
             <description>
                Pass this attribute in all Restful/JSON PAYTRACE API request
             </description>
