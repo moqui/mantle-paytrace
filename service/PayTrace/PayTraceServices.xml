@@ -121,8 +121,8 @@ along with this software (see the LICENSE.md file). If not, see
 
             <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                     in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:'PgoStoreCim',
-                            paymentMethodId:paymentMethodId, transactionDate:ec.user.nowTimestamp,
-                            responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage, resultSuccess:'Y', resultError:'N']"/>
+                            paymentMethodId:paymentMethodId,paymentId:paymentId, transactionDate:ec.user.nowTimestamp,
+                            resultSuccess:'Y', resultError:'N', resultBadCardNumber:'N', referenceNum: '']"/>
 
             <!-- set the gatewayCimId values for Party and PaymentMethod as needed -->
             <if condition="paymentMethod.gatewayCimId"><then>
