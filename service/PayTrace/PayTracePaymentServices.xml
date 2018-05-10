@@ -272,7 +272,82 @@
             </actions>
         </service>
         <service verb="get" noun="PaymentGatewayDetails">
+            <implements service="mantle.account.PaymentServices.get#PaymentGatewayDetails"/>
+            <out-parameters>
+                <parameter name="transactionStatus"/>
+            </out-parameters>
+            <actions>
+                <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+                <if condition="payment == null"><return message="Payment ${paymentId} not found"/></if>
+                <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+                <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
+                    <return message="Cannot get transaction details for payment ${paymentId}, not a Credit Card payment."/></if>
+
+                <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
+                <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+
+                <set field="referenceNum" from="payment.paymentRefNum"/>
+                <if condition="!referenceNum">
+                    <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
+                    <set field="referenceNum" from="paymentGatewayResponse?.referenceNum"/>
+                </if>
+                <if condition="!referenceNum"><return message="Could not find transaction ID (reference number) for Payment ${paymentId}"/></if>
+
+                <set field="paymentOperationEnumId" value="PgoTxDetails"/>
+
+                <script><![CDATA[requestString = """{
+                    "transaction_id":"${referenceNum}"
+                    }"""]]> 
+                </script>
+
+                <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+
+                <set field="responseString" 
+                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/export/by_id', requestString, 'application/json',token.toString())"/>
+
+                <!-- PayTrace transactionType values and corresponding Payment statusId to determine needed action:
             
+                SALE           PmntDelivered
+                AUTHORIZATION  PmntAuthorized
+                REFUND         PmntConfirmed 
+                VOID           PmntVoid
+                CAPTURE        PmntDelivered
+                FORCESALE      PmntDelivered
+                SETTLED        PmntConfirmed 
+                PENDING        PmntDelivered
+                DECLINED       PmntDeclined
+                -->
+                <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
+                
+                <set field="transactionStatus" from="responseNode.transaction_type"/>
+                <if condition="transactionStatus">
+                    <set field="authNetStatusMap" from="[AUTHORIZATION:'PmntAuthorized',
+                        REFUND:'PmntConfirmed', SALE:'PmntDelivered',FORCESALE:'PmntDelivered', 
+                        CAPTURE:'PmntDelivered', SETTLED:'PmntConfirmed', PENDING:'PmntDelivered',
+                        DECLINED:'PmntDeclined', VOID:'PmntVoid']"/>
+                    <set field="gatewayStatusId" from="authNetStatusMap.get(transactionStatus.trim())"/>
+                </if>
+
+                <set field="referenceNum" from="responseNode.transactions?.transaction_id"/>
+
+                <if condition="!gatewayStatusId || gatewayStatusId != payment.statusId">
+                    <!-- save PaymentGatewayResponse including transaction status -->
+                    <set field="responseCode" from="responseNode.success"/>
+                    <set field="reasonCode" from="responseNode.transactions?.approval_code"/>
+                    <set field="reasonMessage" from="responseNode.transactions.approval_message"/>
+                    <set field="statusCode" from="responseNode.transactions?.status_code"/>
+
+                    <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                        in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId,
+                            paymentId:payment.paymentId, paymentMethodId:payment.paymentMethodId, referenceNum:referenceNum,
+                            amount:payment.amount, amountUomId:payment.amountUomId, transactionDate:ec.user.nowTimestamp,
+                            responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,
+                            resultError:(responseCode ? 'N' : 'Y'), resultDeclined:(statusCode == 'N' ? 'Y' : 'N'),
+                            transactionStatus:transactionStatus]"/>
+                </if>
+                
+                
+            </actions>      
         </service>
         <service verb="get" noun="PaymentGatewayInfo">
         <in-parameters><parameter name="paymentId" required="true"/></in-parameters>
@@ -380,4 +455,5 @@
                 <set field="token" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/oauth/token', requestString, 'application/json')"/>
             </actions>
         </service>
-    </services>   
+    </services> 
+  

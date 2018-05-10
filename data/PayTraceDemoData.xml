@@ -2,10 +2,10 @@
 <entity-facade-xml type="demo">
     <mantle.account.method.PaymentGatewayConfig paymentGatewayConfigId="PayTraceDemo"
             paymentGatewayTypeEnumId="PgtPayTrace" description="PayTrace demo"
-            authorizeServiceName=""
-            captureServiceName=""
-            releaseServiceName=""
-            refundServiceName=""/>
+            authorizeServiceName="PayTrace.PayTracePaymentServices.authorize#Payment"
+            captureServiceName="PayTrace.PayTracePaymentServices.capture#Payment"
+            releaseServiceName="PayTrace.PayTracePaymentServices.release#Payment"
+            refundServiceName="PayTrace.PayTracePaymentServices.refund#Payment"/>
 
       <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo" 
             transactionUrl="" username="" 
