@@ -452,7 +452,10 @@
                     "password": "${pgpt.password}"
                     }"""]]>	
                 </script>
-                <set field="token" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/oauth/token', requestString, 'application/json')"/>
+                <set field="responseString" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/oauth/token', requestString, 'application/json')"/>
+                <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
+                <set field="token" from="responseNode.token_type +' ' + responseNode.access_token"/>
+                
             </actions>
         </service>
     </services> 
