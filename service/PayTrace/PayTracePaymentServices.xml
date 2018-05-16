@@ -20,7 +20,7 @@
             <implements service="mantle.account.PaymentServices.authorize#Payment"/>
             <out-parameters>
                 <parameter name="paymentGatewayResponseId"/>
-                <parameter name="responseMap" type="LazyMap"/>
+                <parameter name="responseMap" type="Map"/>
             </out-parameters>
             <actions>
                 <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -59,12 +59,10 @@
                 <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
                 <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
-                <set field="responseNode" from="token"/>
-                <set field="apiToken" from="responseNode.token.access_token"/>
 
                 <script><![CDATA[
                     org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                        .addHeader("Authorization", "bearer ${apiToken}")
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
                         .addHeader("Content-Type", "application/json").jsonObject(requestMap)
                     restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("keyed").build()
                     org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
@@ -74,9 +72,8 @@
                         ec.message.addMessage("PayTrace API error")
                         return
                     }
-                    responseNode = restResponse.jsonObject()
+                    responseMap = restResponse.jsonObject()
                 ]]></script>
-                <set field="responseMap" from="[responseCode:responseNode.success,approvalCode:responseNode.approval_code,avsResult:responseNode.avs_response,cvResult:responseNode.csc_response,reasonCode:responseNode.response_code,reasonMessage:responseNode.status_message,referenceNum:responseNode.transaction_id,errors:responseNode?.errors]"/>
                 
                 <set field="paymentOperationEnumId" value="PgoAuthorize"/>
 
@@ -87,44 +84,56 @@
             <implements service="mantle.account.PaymentServices.capture#Payment"/>
             <actions>
                 <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
-            <if condition="payment == null"><return message="Payment ${paymentId} not found"/></if>
-            <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
-            <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
-                <return error="true" message="Cannot capture payment ${paymentId}, not a Credit Card payment."/></if>
-
-            <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
-            <if condition="!paymentMethod.gatewayCimId">
-                <service-call name="AuthorizeDotNet.CimServices.store#CustomerPaymentMethod"
-                        in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId]"/>
+                <if condition="payment == null"><return message="Payment ${paymentId} not found"/></if>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
-            </if>
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
-            <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
+                <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
+                    <return error="true" message="Cannot capture payment ${paymentId}, not a Credit Card payment."/>
+                </if>
 
-            <entity-find-one entity-name="AuthorizeDotNet.PaymentGatewayAuthorizeNet" value-field="pgan"/>
-            <if condition="pgan == null"><log level="error" message="No PaymentGatewayAuthorizeNet found with ID ${paymentGatewayConfigId}"/><return/></if>
+                <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
+                <if condition="!paymentMethod.gatewayCimId">
+                    <service-call name="AuthorizeDotNet.CimServices.store#CustomerPaymentMethod"
+                        in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId]"/>
+                    <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+                </if>
+                <!-- get party after CIM check so that gatewayCimId will be populated -->
+                <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
+                <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
+                <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
 
-            <set field="paymentRefNum" from="payment.paymentRefNum"/>
-            <if condition="!paymentRefNum">
-                <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
-                <if condition="paymentGatewayResponse == null"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
-                <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
-            </if>
-            <if condition="!paymentRefNum"><return error="true" message="Could not find authorization transaction ID (reference number) for Payment ${paymentId}"/></if>
+                <entity-find-one entity-name="AuthorizeDotNet.PaymentGatewayAuthorizeNet" value-field="pgan"/>
+                <if condition="pgan == null"><log level="error" message="No PaymentGatewayAuthorizeNet found with ID ${paymentGatewayConfigId}"/><return/></if>
 
-                <script>
-                    <![CDATA[requestString = """{
-                        "transaction_id":"${paymentRefNum}"
-                    }"""]]> 
-                </script>
+                <set field="paymentRefNum" from="payment.paymentRefNum"/>
+                <if condition="!paymentRefNum">
+                    <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
+                    <if condition="paymentGatewayResponse == null"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
+                    <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
+                </if>
+                <if condition="!paymentRefNum"><return error="true" message="Could not find authorization transaction ID (reference number) for Payment ${paymentId}"/></if>
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[transaction_id:paymentRefNum]"/>
 
                 <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
                 <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
-                <set field="responseString" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/authorization/capture', requestString, 'application/json',token.toString())"/>
+                
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("capture").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
 
                 <set field="paymentOperationEnumId" value="PgoCapture"/>
                 <service-call name="PayTrace.PayTracePaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -135,7 +144,7 @@
                 If used should generally be configured as the Paytrace service with no capture service set.</description>
             <implements service="mantle.account.PaymentServices.authorize#Payment"/>
             <out-parameters>
-                <parameter name="responseString"/>
+                <parameter name="responseMap" type="Map"/>
             </out-parameters>
             <actions>
                 <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -152,31 +161,28 @@
 
                 <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
                
-                <script>
-                    <![CDATA[requestString = """{
-                        "amount":"${payment.amount}",
-                        "credit_card":{
-                            "number":"${creditCard?.cardNumber}",
-                            "expiration_month":"${creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null}",
-                            "expiration_year":"${creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null}"
-                        },
-                        "csc": "${cardSecurityCode ? cardSecurityCode: ''}",
-                        "billing_address":{
-                        "name":"${postalAddress?.toName}",
-                        "street_address":"${postalAddress?.address1}",
-                        "city":"${postalAddress?.city}",
-                        "state":"${postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null}",
-                        "zip":"${postalAddress?.postalCode}"
-                        }
-                    }"""]]> 
-                </script>
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[amount:payment.amount,credit_card:[number:creditCard?.cardNumber,expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null,expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1],csc:cardSecurityCode ? cardSecurityCode: '',billing_address:[name:postalAddress?.toName,street_address:postalAddress?.address1,city:postalAddress?.city,state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,zip:postalAddress?.postalCode]]"/>
 
                 <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
                 <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
-                <set field="responseString" 
-                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/sale/keyed', requestString, 'application/json',token.toString())"/>
+
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("sale").path("keyed").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
 
                 <set field="paymentOperationEnumId" value="PgoAuthAndCapture"/>
                 <service-call name="PayTrace.PayTracePaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -198,31 +204,29 @@
                 <if condition="cardSecurityCode == null"><return error="true" message="Cannot authorize payment ${paymentId}, must include a cardSecurityCode."/></if>
                 
                 <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[amount:payment.amount,credit_card:[number:creditCard?.cardNumber,expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null,expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null],csc:cardSecurityCode ? cardSecurityCode: '',billing_address:[name:postalAddress?.toName,street_address:postalAddress?.address1,city:postalAddress?.city,state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,zip:postalAddress?.postalCode]]"/>
 
-                <script>
-                    <![CDATA[requestString = """{
-                        "amount":"${payment.amount}",
-                        "credit_card":{
-                            "number":"${creditCard?.cardNumber}",
-                            "expiration_month":"${creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null}",
-                            "expiration_year":"${creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null}"
-                        },
-                        "csc": "${cardSecurityCode ? cardSecurityCode: ''}",
-                        "billing_address":{
-                        "name":"${postalAddress?.toName}",
-                        "street_address":"${postalAddress?.address1}",
-                        "city":"${postalAddress?.city}",
-                        "state":"${postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null}",
-                        "zip":"${postalAddress?.postalCode}"
-                        }
-                    }"""]]> 
-                </script>
                 <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
                 <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
-                <set field="responseString" 
-                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/refund/keyed', requestString, 'application/json',token.toString())"/>
+
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("refund").path("keyed").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
 
                 <set field="paymentOperationEnumId" value="PgoRefund"/>
                 <service-call name="PayTrace.PayTracePaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -258,18 +262,29 @@
                     <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
                 </if>
                 <if condition="!paymentRefNum"><return error="true" message="Could not find authorization transaction ID (reference number) for Payment ${paymentId}"/></if>
-
-                <script><![CDATA[requestString = """{
-                    "transaction_id":"${paymentRefNum}"
-                    }"""]]> 
-                </script>
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[transaction_id:paymentRefNum]"/>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
 
                 <set field="paymentOperationEnumId" value="PgoRelease"/>
-                <set field="responseString" 
-                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/authorization/capture', requestString, 'application/json',token.toString())"/>
 
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("capture").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
+                
                 <service-call name="PayTrace.PayTracePaymentServices.save#Response" in-map="context" out-map="context"/>
 
             </actions>
@@ -297,16 +312,26 @@
                 <if condition="!referenceNum"><return message="Could not find transaction ID (reference number) for Payment ${paymentId}"/></if>
 
                 <set field="paymentOperationEnumId" value="PgoTxDetails"/>
-
-                <script><![CDATA[requestString = """{
-                    "transaction_id":"${referenceNum}"
-                    }"""]]> 
-                </script>
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[transaction_id:referenceNum]"/>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
 
-                <set field="responseString" 
-                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/transactions/export/by_id', requestString, 'application/json',token.toString())"/>
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("export").path("by_id").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
 
                 <!-- PayTrace transactionType values and corresponding Payment statusId to determine needed action:
             
@@ -320,9 +345,8 @@
                 PENDING        PmntDelivered
                 DECLINED       PmntDeclined
                 -->
-                <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
                 
-                <set field="transactionStatus" from="responseNode.transaction_type"/>
+                <set field="transactionStatus" from="responseMap.transaction_type"/>
                 <if condition="transactionStatus">
                     <set field="authNetStatusMap" from="[AUTHORIZATION:'PmntAuthorized',
                         REFUND:'PmntConfirmed', SALE:'PmntDelivered',FORCESALE:'PmntDelivered', 
@@ -331,14 +355,14 @@
                     <set field="gatewayStatusId" from="authNetStatusMap.get(transactionStatus.trim())"/>
                 </if>
 
-                <set field="referenceNum" from="responseNode.transactions?.transaction_id"/>
+                <set field="referenceNum" from="responseMap.transactions?.transaction_id"/>
 
                 <if condition="!gatewayStatusId || gatewayStatusId != payment.statusId">
                     <!-- save PaymentGatewayResponse including transaction status -->
-                    <set field="responseCode" from="responseNode.success"/>
-                    <set field="reasonCode" from="responseNode.transactions?.approval_code"/>
-                    <set field="reasonMessage" from="responseNode.transactions.approval_message"/>
-                    <set field="statusCode" from="responseNode.transactions?.status_code"/>
+                    <set field="responseCode" from="responseMap.success"/>
+                    <set field="reasonCode" from="responseMap.transactions?.approval_code"/>
+                    <set field="reasonMessage" from="responseMap.transactions.approval_message"/>
+                    <set field="statusCode" from="responseMap.transactions?.status_code"/>
 
                     <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                         in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId,
@@ -348,8 +372,6 @@
                             resultError:(responseCode ? 'N' : 'Y'), resultDeclined:(statusCode == 'N' ? 'Y' : 'N'),
                             transactionStatus:transactionStatus]"/>
                 </if>
-                
-                
             </actions>      
         </service>
         <service verb="get" noun="PaymentGatewayInfo">
@@ -403,29 +425,37 @@
                 <parameter name="paymentMethodId"/>
                 <parameter name="paymentGatewayConfigId"/>
                 <parameter name="paymentOperationEnumId" required="true"/>
-                <parameter name="responseMap" required="true"/>
+                <parameter name="responseMap" type="Map" required="true"/>
             </in-parameters>
             <out-parameters>
-                <parameter name="responseMap"/>
+                <parameter name="paymentGatewayResponseId"/>
             </out-parameters>
             <actions>
                 <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
                 <if condition="payment &amp;&amp; !paymentMethodId"><set field="paymentMethodId" from="payment.paymentMethodId"/></if>
 
-                <set field="badCardNumber" from="responseMap.errors?.'35'"/>
-                <set field="badExpireMonth" from="responseMap.errors?.'43'"/>
-                <set field="badExpireYear" from="responseMap.errors?.'44'"/>
+                <set field="responseCode" from="responseMap.success"/>
+                <set field="approvalCode" from="responseMap.approval_code"/>
+                <set field="avsResult" from="responseMap.avs_response"/>
+                <set field="cvResult" from="responseMap.csc_response"/>
+                <set field="reasonCode" from="responseMap.response_code"/>
+                <set field="reasonMessage" from="responseMap.status_message"/>
+                <set field="referenceNum" from="responseMap.transaction_id"/>
+                <set field="errors" from="responseMap?.errors"/>
+                <set field="badCardNumber" from="errors?.'35'"/>
+                <set field="badExpireMonth" from="errors?.'43'"/>
+                <set field="badExpireYear" from="errors?.'44'"/>
 
                 <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                     in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId,
                         paymentId:paymentId, paymentMethodId:paymentMethodId,
                         amount:payment.amount, amountUomId:payment?.amountUomId, referenceNum:referenceNum,
-                        approvalCode:responseMap.approvalCode, responseCode:responseMap.responseCode,
-                        reasonCode:responseMap.reasonCode, reasonMessage:responseMap.reasonMessage,
-                        avsResult:responseMap.avsResult, cvResult:responseMap.cvResult,
+                        approvalCode:approvalCode, responseCode:responseCode,
+                        reasonCode:reasonCode, reasonMessage:reasonMessage,
+                        avsResult:avsResult, cvResult:cvResult,
                         transactionDate:ec.user.nowTimestamp,
-                        resultSuccess:(responseMap.reasonCode == 101 || responseMap.reasonCode == 112 ? 'Y' : 'N'), resultDeclined:(responseMap.reasonCode == 102 || responseMap.reasonCode 113 ? 'Y' : 'N'),
-                        resultError:(responseMap.reasonCode == 1 ? 'Y' : 'N'),
+                        resultSuccess:(reasonCode == 101 || reasonCode == 112 ? 'Y' : 'N'), resultDeclined:(responseMap.reasonCode == 102 || reasonCode == 113 ? 'Y' : 'N'),
+                        resultError:(reasonCode == 1 ? 'Y' : 'N'),
                         resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'),
                         resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>
                 
@@ -437,7 +467,7 @@
                 <parameter name="paymentGatewayConfigId"/>
             </in-parameters>
             <out-parameters>
-               <parameter name="token"/>
+               <parameter name="token" type="Map"/>
             </out-parameters>
             <actions>
                 <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	

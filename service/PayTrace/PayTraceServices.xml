@@ -70,31 +70,13 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="expireDateFormatted" value="${expireYear}-${expireMonth}"/>
             <!-- correct masking if needed, use only 'X' -->
             <set field="cardNumber" from="creditCard.cardNumber"/>
-
-            <script>
-                <![CDATA[requestString = """{
-                    "customer_id":"${party.partyId}",
-                    "credit_card":{
-                        "number":"${cardNumber}",
-                        "expiration_month":"${expireMonth}",
-                        "expiration_year":"${expireYear}"
-                    },
-                    "billing_address":{
-                        "name":"${paymentMethod.titleOnAccount}",
-                        "street_address":"${postalAddress.address1}",
-                        "city":"${postalAddress.city}",
-                        "state":"${postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null}",
-                        "zip":"${postalAddress.postalCode}"
-                    }
-                }"""]]>	
-            </script>
-
+            
             <if condition="paymentMethod.gatewayCimId"><then>
                 <!-- have a payment profile, call updateCustomerProfile -->
-                <set field="url" value="/customer/update"/>
+                <set field="url" value="customer/update"/>
                 </then><else>
                     <!-- no payment profile but we have a customer profile, call createCustomerProfile -->
-                    <set field="url" value="/customer/create"/>
+                    <set field="url" value="customer/create"/>
                     </else>
             </if>
 
@@ -102,10 +84,23 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
             <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <set field="requestMap" from="[customer_id:party.partyId,credit_card:[number:cardNumber,expiration_month:expireMonth,expiration_year:expireYear],billing_address:[name:paymentMethod.titleOnAccount,street_address:postalAddress.address1,city:postalAddress.city,state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,zip:postalAddress.postalCode]]"/>
 
-            <set field="responseString" from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion + url, requestString, 'application/json',token.toString())"/>
+            <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path(url).build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseNode = restResponse.jsonObject()
+            ]]></script>
 
-            <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
             <set field="responseCode" from="responseNode.success"/>
             <set field="reasonCode" from="responseNode.response_code"/>
             <set field="reasonMessage" from="responseNode.status_message"/>
@@ -170,23 +165,32 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
 
             <if condition="paymentMethod.gatewayCimId">
-                <!-- call deleteCustomer -->
-                <script><![CDATA[requestString = """{
-                    "customer_id":"${party.gatewayCimId}"
-                    }"""]]> 
-                </script>
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[customer_id:party.gatewayCimId]"/>
 
                 <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
 
-                <set field="responseString" 
-                from="org.moqui.util.WebUtilities.simpleHttpStringRequest(pgpt.transactionUrl + '/'+pgpt.apiVersion+'/customer/delete', requestString, 'application/json',token.toString())"/>
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("customer").path("delete").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
 
                 <log level="info" message="delete#CustomerPaymentMethod responseString: \n${responseString}"/>
-                <set field="responseNode" from="new groovy.json.JsonSlurper().parseText(responseString)"/>
                 
-                <set field="responseCode" from="responseNode.success"/>
-                <set field="reasonCode" from="responseNode.response_code"/>
-                <set field="reasonMessage" from="responseNode.status_message"/>
+                <set field="responseCode" from="responseMap.success"/>
+                <set field="reasonCode" from="responseMap.response_code"/>
+                <set field="reasonMessage" from="responseMap.status_message"/>
 
                 <if condition="!responseCode || true != responseCode">
                     <log level="warn" message="Error deleting PayTrace CIM info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
