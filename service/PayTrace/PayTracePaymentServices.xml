@@ -34,7 +34,6 @@
             <if condition="!cardSecurityCode">
                 <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
             </if>
-            <if condition="cardSecurityCode == null"><return error="true" message="Cannot authorize payment ${paymentId}, must include a cardSecurityCode."/></if>
 
             <set field="visit" from="payment.'moqui.server.Visit'"/>
 
@@ -156,7 +155,6 @@
                 <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
                 <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
             </if>
-            <if condition="cardSecurityCode == null"><return error="true" message="Cannot authorize payment ${paymentId}, must include a cardSecurityCode."/></if>
 
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
                
@@ -201,7 +199,6 @@
                 <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
                 <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
             </if>
-            <if condition="cardSecurityCode == null"><return error="true" message="Cannot authorize payment ${paymentId}, must include a cardSecurityCode."/></if>
                 
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
                 

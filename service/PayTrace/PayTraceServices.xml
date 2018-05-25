@@ -84,12 +84,12 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
             <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
-            <set field="requestMap" from="[customer_id:party.partyId, credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear], billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress.postalCode]]"/>
+            <set field="requestMap" from="[customer_id:paymentMethodId, credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear], billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress.postalCode]]"/>
 
             <script><![CDATA[
                     org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                        .addHeader("Authorization", "bearer ${token.token.access_token}")
-                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    .addHeader("Authorization", "bearer ${token.token.access_token}")
+                    .addHeader("Content-Type", "application/json").jsonObject(requestMap)
                     restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path(url).build()
                     org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
