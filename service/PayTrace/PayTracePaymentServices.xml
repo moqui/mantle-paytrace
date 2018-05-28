@@ -31,15 +31,13 @@
             </if>
                 
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
-            <if condition="!cardSecurityCode">
-                <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
-            </if>
+            <if condition="!cardSecurityCode"><set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/></if>
 
             <set field="visit" from="payment.'moqui.server.Visit'"/>
 
             <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
             <if condition="!paymentMethod.gatewayCimId">
-                <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod"
+                <service-call name="PayTrace.PayTraceVaultServices.store#CustomerPaymentMethod"
                             in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
@@ -57,7 +55,7 @@
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -91,7 +89,8 @@
 
             <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
             <if condition="!paymentMethod.gatewayCimId">
-                <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod" in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
+                <service-call name="PayTrace.PayTraceVaultServices.store#CustomerPaymentMethod"
+                        in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
             <!-- get party after CIM check so that gatewayCimId will be populated -->
@@ -113,7 +112,7 @@
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
                 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -159,12 +158,19 @@
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
                
             <!-- assemble the full request Map -->
-            <set field="requestMap" from="[amount:payment.amount, credit_card:[number:creditCard?.cardNumber, expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null,    expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1], csc:cardSecurityCode ? cardSecurityCode: '', billing_address:[name:postalAddress?.toName, street_address:postalAddress?.address1, city:postalAddress?.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress?.postalCode]]"/>
+            <set field="requestMap" from="[amount:payment.amount,
+                credit_card:[number:creditCard?.cardNumber,
+                    expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null,
+                    expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null],
+                csc:cardSecurityCode ?: '',
+                billing_address:[name:postalAddress?.toName, street_address:postalAddress?.address1, city:postalAddress?.city,
+                    state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,
+                    zip:postalAddress?.postalCode]]"/>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -203,12 +209,19 @@
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
                 
             <!-- assemble the full request Map -->
-            <set field="requestMap" from="[amount:payment.amount, credit_card:[number:creditCard?.cardNumber, expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null, expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null], csc:cardSecurityCode ? cardSecurityCode: '', billing_address:[name:postalAddress?.toName, street_address:postalAddress?.address1, city:postalAddress?.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress?.postalCode]]"/>
+            <set field="requestMap" from="[amount:payment.amount,
+                credit_card:[number:creditCard?.cardNumber,
+                    expiration_month:creditCard?.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null,
+                    expiration_year:creditCard?.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null],
+                csc:cardSecurityCode ?: '',
+                billing_address:[name:postalAddress?.toName, street_address:postalAddress?.address1, city:postalAddress?.city,
+                    state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,
+                    zip:postalAddress?.postalCode]]"/>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -240,7 +253,7 @@
             </if>
             <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
             <if condition="!paymentMethod.gatewayCimId">
-                <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod"
+                <service-call name="PayTrace.PayTraceVaultServices.store#CustomerPaymentMethod"
                             in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
@@ -263,7 +276,7 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[transaction_id:paymentRefNum]"/>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <set field="paymentOperationEnumId" value="PgoRelease"/>
 
@@ -314,7 +327,7 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[transaction_id:referenceNum]"/>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -414,7 +427,7 @@
         </actions>
     </service>
 
-    <service verb="payTrace" noun="login">
+    <service verb="login" noun="PayTrace">
         <in-parameters>
             <parameter name="paymentGatewayConfigId"/>
         </in-parameters>
@@ -442,4 +455,3 @@
         </actions>
     </service>
 </services> 
-  

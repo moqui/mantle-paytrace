@@ -21,7 +21,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="paymentMethodId" required="true"/>
             <parameter name="validateSecurityCode"/>
             <parameter name="paymentId"/>
-            <parameter name="paymentGatewayConfigId"><description>If not specified gets from PaymentMethod or PayTracePaymentGatewayConfigId user preference</description></parameter>
+            <parameter name="paymentGatewayConfigId"><description>If not specified gets from PaymentMethod or PayTraceVaultPaymentGatewayConfigId user preference</description></parameter>
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
@@ -30,10 +30,10 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
             <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
             <if condition="!paymentGatewayConfigId"><set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/></if>
-            <!-- then try from PayTracePaymentGatewayConfigId preference -->
+            <!-- then try from PayTraceVaultPaymentGatewayConfigId preference -->
             <if condition="!paymentGatewayConfigId">
-                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTracePaymentGatewayConfigId')"/></if>
-            <if condition="!paymentGatewayConfigId"><log level="warn" message="In store#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTracePaymentGatewayConfigId user preference found"/><return/></if>
+                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTraceVaultPaymentGatewayConfigId')"/></if>
+            <if condition="!paymentGatewayConfigId"><log level="warn" message="In store#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTraceVaultPaymentGatewayConfigId user preference found"/><return/></if>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
             <if condition="pgpt == null">
@@ -83,7 +83,7 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
             <set field="requestMap" from="[customer_id:paymentMethodId, credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear], billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress.postalCode]]"/>
 
             <script><![CDATA[
@@ -146,10 +146,10 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
             <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
             <set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/>
-            <!-- then try from PayTracePaymentGatewayConfigId preference -->
+            <!-- then try from PayTraceVaultPaymentGatewayConfigId preference -->
             <if condition="!paymentGatewayConfigId">
-                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTracePaymentGatewayConfigId')"/></if>
-            <if condition="!paymentGatewayConfigId"><log level="warn" message="In delete#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTracePaymentGatewayConfigId user preference found"/><return/></if>
+                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTraceVaultPaymentGatewayConfigId')"/></if>
+            <if condition="!paymentGatewayConfigId"><log level="warn" message="In delete#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTraceVaultPaymentGatewayConfigId user preference found"/><return/></if>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
                 <if condition="pgpt == null">
@@ -165,7 +165,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <!-- assemble the full request Map -->
                 <set field="requestMap" from="[customer_id:party.gatewayCimId]"/>
 
-                <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+                <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
                 <script><![CDATA[
                     org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
