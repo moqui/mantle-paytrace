@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a 
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
+
+    <!-- These services are based on the PayTrace API, version 1. See: http://help.paytrace.com/api -->
+
+    <service verb="store" noun="CustomerPaymentMethod" authenticate="anonymous-all">
+        <in-parameters>
+            <parameter name="paymentMethodId" required="true"/>
+            <parameter name="validateSecurityCode"/>
+            <parameter name="paymentId"/>
+            <parameter name="paymentGatewayConfigId"><description>If not specified gets from PaymentMethod or PayTracePaymentGatewayConfigId user preference</description></parameter>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
+             
+            <if condition="creditCard == null"><return/></if>
+            <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+            <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
+            <if condition="!paymentGatewayConfigId"><set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/></if>
+            <!-- then try from PayTracePaymentGatewayConfigId preference -->
+            <if condition="!paymentGatewayConfigId">
+                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTracePaymentGatewayConfigId')"/></if>
+            <if condition="!paymentGatewayConfigId"><log level="warn" message="In store#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTracePaymentGatewayConfigId user preference found"/><return/></if>
+
+            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
+            <if condition="pgpt == null">
+            <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
+                <log message="Not saving payment method ${paymentMethodId} with PayTrace, no 
+                PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+                <return/>
+            </if>
+
+            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
+
+            <!-- get billing contact info, use for any not set on PaymentMethod -->
+            <service-call name="mantle.party.ContactServices.get#PartyContactInfo" out-map="billingContactInfo"
+                    in-map="[partyId:paymentMethod.ownerPartyId, postalContactMechPurposeId:'PostalBilling', 
+                            telecomContactMechPurposeId:'PhoneBilling',  emailContactMechPurposeId:'EmailBilling']"/>
+
+            <set field="postalAddress" from="paymentMethod.postalAddress"/>
+            <if condition="postalAddress == null">
+                <set field="postalAddress" from="billingContactInfo.postalAddress"/>
+                <set field="stateProvinceGeo" from="billingContactInfo.postalAddressStateGeo"/>
+            </if>
+            <if condition="postalAddress == null"><return message="No address associated with credit card ${paymentMethodId}, not saving CIM record."/></if>
+            <set field="stateProvinceGeo" from="stateProvinceGeo != null ? stateProvinceGeo : postalAddress.stateProvinceGeo"/>
+
+            <set field="telecomNumber" from="paymentMethod.telecomNumber"/>
+            <if condition="telecomNumber == null"><set field="telecomNumber" from="billingContactInfo.telecomNumber"/></if>
+            <set field="phone" from="(telecomNumber?.countryCode ? (telecomNumber.countryCode + '-') : '') + (telecomNumber?.areaCode ? (telecomNumber.areaCode + '-') : '') + telecomNumber?.contactNumber"/>
+            <set field="emailContactMech" from="paymentMethod.'Email#mantle.party.contact.ContactMech'"/>
+            <if condition="emailContactMech == null"><set field="emailContactMech" from="billingContactInfo.emailContactMech"/></if>
+
+            <!-- credit card data -->
+            <set field="expireMonth" from="creditCard.expireDate ? creditCard.expireDate.substring(0, creditCard.expireDate.indexOf('/')) : null"/>
+            <set field="expireYear" from="creditCard.expireDate ? creditCard.expireDate.substring(creditCard.expireDate.indexOf('/')+1) : null"/>
+            <set field="expireDateFormatted" value="${expireYear}-${expireMonth}"/>
+            <!-- correct masking if needed, use only 'X' -->
+            <set field="cardNumber" from="creditCard.cardNumber"/>
+            
+            <if condition="paymentMethod.gatewayCimId"><then>
+                <!-- have a payment profile, call updateCustomerProfile -->
+                <set field="url" value="customer/update"/>
+                </then><else>
+                    <!-- no payment profile but we have a customer profile, call createCustomerProfile -->
+                    <set field="url" value="customer/create"/>
+                    </else>
+            </if>
+
+            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
+            <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+
+            <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <set field="requestMap" from="[customer_id:paymentMethodId, credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear], billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress.postalCode]]"/>
+
+            <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                    .addHeader("Authorization", "bearer ${token.token.access_token}")
+                    .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path(url).build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseNode = restResponse.jsonObject()
+            ]]></script>
+
+            <set field="responseCode" from="responseNode.success"/>
+            <set field="reasonCode" from="responseNode.response_code"/>
+            <set field="reasonMessage" from="responseNode.status_message"/>
+
+            <if condition="!responseCode || true != responseCode">
+                <log level="warn" message="Error saving PayTrace info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
+                <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                        in-map="[paymentGatewayConfigId:paymentGatewayConfigId,  paymentOperationEnumId:'PgoStoreCim', 
+                            paymentMethodId:paymentMethodId, paymentId:paymentId,  transactionDate:ec.user.nowTimestamp, 
+                            responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,  resultSuccess:'N', resultError:'Y']"/>
+                <return message="Could not save payment method ${paymentMethodId}, message: ${reasonMessage} error: ${responseNode}"/>
+            </if>
+
+            <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                    in-map="[paymentGatewayConfigId:paymentGatewayConfigId,  paymentOperationEnumId:'PgoStoreCim', 
+                            paymentMethodId:paymentMethodId, paymentId:paymentId,  transactionDate:ec.user.nowTimestamp, 
+                            resultSuccess:'Y', resultError:'N', resultBadCardNumber:'N', referenceNum: '']"/>
+
+            <if condition="paymentMethod.gatewayCimId"><then>
+            </then><else-if condition="party.gatewayCimId">
+                <set field="paymentMethod.gatewayCimId" from="responseNode.customer_id"/>
+                <set field="paymentMethod.paymentGatewayConfigId" from="paymentGatewayConfigId"/>
+                <entity-update value-field="paymentMethod"/>
+            </else-if><else>
+                <set field="party.gatewayCimId" from="responseNode.customer_id"/>
+                <entity-update value-field="party"/>
+                <set field="paymentMethod.gatewayCimId" from="responseNode.customer_id"/>
+                <set field="paymentMethod.paymentGatewayConfigId" from="paymentGatewayConfigId"/>
+                <entity-update value-field="paymentMethod"/>
+            </else></if>
+
+            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode 
+            <set field="creditCard.cardSecurityCode" from="null"/>
+            <set field="creditCard.cardNumber"
+                    from="'*'.padRight(creditCard.cardNumber.length() - 4, '*') + creditCard.cardNumber.substring(creditCard.cardNumber.length() - 4, creditCard.cardNumber.length())"/>
+            <entity-update value-field="creditCard"/>-->
+        </actions>
+    </service>
+
+    <service verb="delete" noun="CustomerPaymentMethod">
+        <in-parameters><parameter name="paymentMethodId"/></in-parameters>
+        <actions>
+            <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+            <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
+            <set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/>
+            <!-- then try from PayTracePaymentGatewayConfigId preference -->
+            <if condition="!paymentGatewayConfigId">
+                <set field="paymentGatewayConfigId" from="ec.user.getPreference('PayTracePaymentGatewayConfigId')"/></if>
+            <if condition="!paymentGatewayConfigId"><log level="warn" message="In delete#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTracePaymentGatewayConfigId user preference found"/><return/></if>
+
+            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
+                <if condition="pgpt == null">
+                    <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
+                    <log message="Not deleting payment method ${paymentMethodId} from PayTrace, no PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+                    <return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+                </if>
+            
+            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
+
+            <if condition="paymentMethod.gatewayCimId">
+                
+                <!-- assemble the full request Map -->
+                <set field="requestMap" from="[customer_id:party.gatewayCimId]"/>
+
+                <service-call name="PayTrace.PayTracePaymentServices.payTrace#login" in-map="context" out-map="token"/>
+
+                <script><![CDATA[
+                    org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Authorization", "bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                    restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("customer").path("delete").build()
+                    org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
+                    
+                    if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
+                        ec.logger.error("PayTrace API response ${restResponse.statusCode}")
+                        ec.message.addMessage("PayTrace API error")
+                        return
+                    }
+                    responseMap = restResponse.jsonObject()
+                ]]></script>
+
+                <log level="info" message="delete#CustomerPaymentMethod responseString: \n${responseString}"/>
+                
+                <set field="responseCode" from="responseMap.success"/>
+                <set field="reasonCode" from="responseMap.response_code"/>
+                <set field="reasonMessage" from="responseMap.status_message"/>
+
+                <if condition="!responseCode || true != responseCode">
+                    <log level="warn" message="Error deleting PayTrace CIM info for PaymentMethod [${paymentMethodId}]: ${responseString}"/>
+                    <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                            in-map="[paymentGatewayConfigId:paymentGatewayConfigId,  paymentOperationEnumId:'PgoStoreCim', 
+                            paymentMethodId:paymentMethodId, transactionDate:ec.user.nowTimestamp, 
+                            responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,  resultSuccess:'N', resultError:'Y']"/>
+                    <return message="Could not delete CIM payment method ${paymentMethodId}, message: ${reasonMessage}"/>
+                </if>
+
+                <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
+                        in-map="[paymentGatewayConfigId:paymentGatewayConfigId,  paymentOperationEnumId:'PgoStoreCim', 
+                            paymentMethodId:paymentMethodId, transactionDate:ec.user.nowTimestamp, 
+                            responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,  resultSuccess:'Y', resultError:'N']"/>
+
+                <set field="paymentMethod.gatewayCimId" from="null"/>
+                <entity-update value-field="paymentMethod"/>
+            </if>
+        </actions>
+    </service>
+</services>

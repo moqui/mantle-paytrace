@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a 
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<secas xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-eca-2.1.xsd">
+    <seca service="mantle.account.PaymentMethodServices.create#CreditCard" when="post-service"><!-- run in same tx so user gets any errors -->
+        <actions>
+        	<if condition="ec.user.getPreference('PayTraceEnabled') != 'true'"><return/></if>
+            <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod" in-map="context"/>
+        </actions>
+    </seca>
+    <seca service="mantle.account.PaymentMethodServices.update#CreditCard" when="post-service"><!-- run in same tx so user gets any errors -->
+        <actions>
+            <if condition="ec.user.getPreference('PayTraceEnabled') != 'true'">
+                <!-- if not enabled but PaymentMethod has a paymentGatewayConfigId then call anyway, ie only return if no gateway on PaymentMethod -->
+                <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+                <if condition="!paymentMethod.paymentGatewayConfigId"><return/></if>
+                <set field="paymentGatewayConfigId" from="paymentMethod.paymentGatewayConfigId"/>
+            </if>
+            <service-call name="PayTrace.PayTraceServices.store#CustomerPaymentMethod" in-map="context"/>
+        </actions>
+    </seca>
+    <seca service="mantle.account.PaymentMethodServices.delete#PaymentMethod" when="post-service">
+        <actions>
+            <if condition="ec.user.getPreference('PayTraceEnabled') != 'true'">
+                <!-- if not enabled but PaymentMethod has a paymentGatewayConfigId then call anyway, ie only return if no gateway on PaymentMethod -->
+                <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+                <if condition="!paymentMethod.paymentGatewayConfigId"><return/></if>
+                <set field="paymentGatewayConfigId" from="paymentMethod.paymentGatewayConfigId"/>
+            </if>
+            <service-call name="PayTrace.PayTraceServices.delete#CustomerPaymentMethod" in-map="context"/>
+        </actions>
+    </seca>
+    <seca service="mantle.account.PaymentMethodServices.expunge#PaymentMethod" when="pre-service">
+        <actions>
+            <if condition="ec.user.getPreference('PayTraceEnabled') != 'true'">
+                <!-- if not enabled but PaymentMethod has a paymentGatewayConfigId then call anyway, ie only return if no gateway on PaymentMethod -->
+                <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+                <if condition="!paymentMethod.paymentGatewayConfigId"><return/></if>
+                <set field="paymentGatewayConfigId" from="paymentMethod.paymentGatewayConfigId"/>
+            </if>
+            <service-call name="PayTrace.PayTraceServices.delete#CustomerPaymentMethod" in-map="context"/>
+        </actions>
+    </seca>
+</secas>
