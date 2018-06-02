@@ -15,7 +15,7 @@ along with this software (see the LICENSE.md file). If not, see
 <entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-2.1.xsd">
     <entity entity-name="PaymentGatewayPayTrace" package="PayTrace">
         <field name="paymentGatewayConfigId" type="id" is-pk="true"/>
-        <field name="transactionUrl" type="text-medium"><description>Transaction URL</description></field>
+        <field name="hostName" type="text-medium"><description>Transaction Host Name (api.paytrace.com)</description></field>
         <field name="username" type="text-medium" encrypt="true"><description>PayTrace API login (username)</description></field>
         <field name="password" type="text-medium" encrypt="true"><description>PayTrace API login (password)</description></field>
         <field name="integratorId" type="text-medium" encrypt="true">
