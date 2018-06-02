@@ -25,9 +25,9 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.method.CreditCard" value-field="creditCard"/>
-             
             <if condition="creditCard == null"><return/></if>
             <entity-find-one entity-name="mantle.account.method.PaymentMethod" value-field="paymentMethod"/>
+
             <!-- see if associated PaymentMethod has a paymentGatewayConfigId -->
             <if condition="!paymentGatewayConfigId"><set field="paymentGatewayConfigId" from="paymentMethod?.paymentGatewayConfigId"/></if>
             <!-- then try from PayTraceVaultPaymentGatewayConfigId preference -->
@@ -38,8 +38,7 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
             <if condition="pgpt == null">
             <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
-                <log message="Not saving payment method ${paymentMethodId} with PayTrace, no 
-                PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+                <log message="Not saving payment method ${paymentMethodId} with PayTrace, no PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
                 <return/>
             </if>
 
@@ -79,11 +78,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="url" value="customer/create"/>
             </else></if>
 
-            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>	
-            <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
-
             <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
-            <set field="requestMap" from="[customer_id:paymentMethodId, credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear], billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city, state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null, zip:postalAddress.postalCode]]"/>
+            <set field="requestMap" from="[customer_id:(paymentMethod.gatewayCimId ?: paymentMethodId),
+                    credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear],
+                    billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city,
+                        state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,
+                        zip:postalAddress.postalCode]]"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -118,24 +118,18 @@ along with this software (see the LICENSE.md file). If not, see
                             paymentMethodId:paymentMethodId, paymentId:paymentId,  transactionDate:ec.user.nowTimestamp, 
                             resultSuccess:'Y', resultError:'N', resultBadCardNumber:'N', referenceNum: '']"/>
 
-            <if condition="paymentMethod.gatewayCimId"><then>
-            </then><else-if condition="party.gatewayCimId">
+            <!-- NOTE: only save paymentMethod.gatewayCimId, don't set party.gatewayCimId because it isn't needed or used and would conflict with Authorize.NET -->
+            <if condition="!paymentMethod.gatewayCimId">
                 <set field="paymentMethod.gatewayCimId" from="responseNode.customer_id"/>
                 <set field="paymentMethod.paymentGatewayConfigId" from="paymentGatewayConfigId"/>
                 <entity-update value-field="paymentMethod"/>
-            </else-if><else>
-                <set field="party.gatewayCimId" from="responseNode.customer_id"/>
-                <entity-update value-field="party"/>
-                <set field="paymentMethod.gatewayCimId" from="responseNode.customer_id"/>
-                <set field="paymentMethod.paymentGatewayConfigId" from="paymentGatewayConfigId"/>
-                <entity-update value-field="paymentMethod"/>
-            </else></if>
+            </if>
 
-            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode 
+            <!-- clear out creditCard.cardNumber and creditCard.cardSecurityCode -->
             <set field="creditCard.cardSecurityCode" from="null"/>
             <set field="creditCard.cardNumber"
                     from="'*'.padRight(creditCard.cardNumber.length() - 4, '*') + creditCard.cardNumber.substring(creditCard.cardNumber.length() - 4, creditCard.cardNumber.length())"/>
-            <entity-update value-field="creditCard"/>-->
+            <entity-update value-field="creditCard"/>
         </actions>
     </service>
 
@@ -151,11 +145,11 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="!paymentGatewayConfigId"><log level="warn" message="In delete#CustomerPaymentMethod no paymentGatewayConfigId specified or PayTraceVaultPaymentGatewayConfigId user preference found"/><return/></if>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
-                <if condition="pgpt == null">
-                    <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
-                    <log message="Not deleting payment method ${paymentMethodId} from PayTrace, no PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
-                    <return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
-                </if>
+            <if condition="pgpt == null">
+                <!-- this will happen regularly when PaymentMethod.paymentGatewayConfigId is for another gateway -->
+                <log message="Not deleting payment method ${paymentMethodId} from PayTrace, no PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+                <return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/>
+            </if>
             
             <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
 
