@@ -59,9 +59,10 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("keyed").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("authorization").path("keyed").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -116,9 +117,10 @@
                 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("capture").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("authorization").path("capture").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -174,9 +176,10 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("sale").path("keyed").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("sale").path("keyed").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -225,9 +228,10 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("refund").path("keyed").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("refund").path("keyed").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -282,9 +286,10 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("void").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("void").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -296,7 +301,6 @@
             ]]></script>
                 
             <service-call name="PayTrace.PayTracePaymentServices.save#Response" in-map="context" out-map="context"/>
-
         </actions>
     </service>
     <service verb="get" noun="PaymentGatewayDetails">
@@ -331,9 +335,10 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path(pgpt.apiVersion).path("transactions").path("export").path("by_id").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("export").path("by_id").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -412,18 +417,18 @@
             <set field="badExpireMonth" from="errors?.'43'"/>
             <set field="badExpireYear" from="errors?.'44'"/>
 
+            <!-- for response codes see https://developers.paytrace.com/support/home#API_Response_Codes -->
             <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
-                in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId, 
-                paymentId:paymentId, paymentMethodId:paymentMethodId, 
-                amount:payment.amount, amountUomId:payment?.amountUomId, referenceNum:referenceNum, 
-                approvalCode:approvalCode, responseCode:responseCode, 
-                reasonCode:reasonCode, reasonMessage:reasonMessage, 
-                avsResult:avsResult, cvResult:cvResult, 
-                transactionDate:ec.user.nowTimestamp, 
-                resultSuccess:(reasonCode == 101 || reasonCode == 112 ? 'Y' : 'N'), resultDeclined:(responseMap.reasonCode == 102 || reasonCode == 113 ? 'Y' : 'N'), 
-                resultError:(reasonCode == 1 ? 'Y' : 'N'), 
-                resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'), 
-                resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>        
+                    in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId,
+                        paymentId:paymentId, paymentMethodId:paymentMethodId,
+                        amount:payment.amount, amountUomId:payment?.amountUomId, referenceNum:referenceNum,
+                        approvalCode:approvalCode, responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,
+                        avsResult:avsResult, cvResult:cvResult, transactionDate:ec.user.nowTimestamp,
+                        resultSuccess:(reasonCode in [101, 106, 108, 109, 112, 120, 122, 124] ? 'Y' : 'N'),
+                        resultDeclined:(responseMap.reasonCode in [102, 103, 107, 110, 113, 125] ? 'Y' : 'N'),
+                        resultError:(reasonCode == 1 ? 'Y' : 'N'),
+                        resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'),
+                        resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>
         </actions>
     </service>
 
@@ -441,8 +446,9 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[grant_type:'password',username:pgpt.username,password:pgpt.password]"/>
             <script><![CDATA[
-                org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST).addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.transactionUrl).port(443).path("oauth").path("token").build()
+                org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path("oauth").path("token").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {

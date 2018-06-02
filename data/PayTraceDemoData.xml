@@ -7,8 +7,8 @@
             releaseServiceName="PayTrace.PayTracePaymentServices.release#Payment"
             refundServiceName="PayTrace.PayTracePaymentServices.refund#Payment"/>
 
-      <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo" 
-            transactionUrl="" username="" password="" integratorId="" apiVersion="v1"/>
+      <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo"
+              hostName="api.paytrace.com" username="" password="" integratorId="" apiVersion="v1"/>
 
     <!-- these are the global settings for CIM since it is system-wide and not store-specific -->
     <moqui.security.UserGroupPreference userGroupId="ALL_USERS" preferenceKey="PayTraceVaultEnabled" preferenceValue="false"/>
