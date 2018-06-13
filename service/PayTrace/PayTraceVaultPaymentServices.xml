@@ -21,6 +21,7 @@
         <out-parameters>
             <parameter name="paymentGatewayResponseId"/>
             <parameter name="responseMap" type="Map"/>
+            <parameter name="response" type="Map"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -73,6 +74,12 @@
             <set field="paymentOperationEnumId" value="PgoAuthorize"/>
 
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
+            
+            <if condition="creditCard.creditCardTypeEnumId == 'CctVisa' 
+                || creditCard.creditCardTypeEnumId == 'CctMastercard'">
+                <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" in-map="[
+                paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, paymentMethodId:paymentMethodId]" out-map="response"/>
+            </if>
         </actions>
     </service>
     <service verb="send" noun="LevelThreeData">
@@ -82,16 +89,14 @@
             <parameter name="paymentMethodId"/>
         </in-parameters>
         <out-parameters>
-            <parameter name="orderInfo" type="Map"/>
+            <parameter name="responseMap" type="Map"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
 
             <set field="paymentRefNum" from="payment.paymentRefNum"/>
             <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
-            <if condition="!paymentRefNum">
-                <return error="true" message="Could not find successful authorization for Payment ${paymentId}"/>
-            </if>
+            
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
 
@@ -103,15 +108,79 @@
 
             <service-call name="mantle.order.OrderInfoServices.get#OrderDisplayInfo" in-map="[orderId:orderId]" out-map="orderInfo"/>
             
+            <set field="lineItems" from="[]"/>
+            <set field="discountAmount" from="0"/>
+            <iterate list="orderInfo.orderItemList" entry="orderItem">
+                <if condition="orderItem.productId != null">
+                    <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
+                        <!--Missing mto find in line item data Visa
+                            additional_tax_amount
+                            additional_tax_rate
+                            commodity_code
+                            discount_amount
+                            unit_of_measure
+                        -->
+                        <set field="item" from="[amount: orderItem.unitAmount * orderItem.quantity, 
+                            description: orderItem.itemDescription, product_id: orderItem.productId, 
+                            quantity: orderItem.quantity, unit_cost: orderItem.unitAmount]"/>
+                    </if>
+
+                    <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
+                        <!--Missing to find in line item data Mastercard
+                            additional_tax_amount
+                            additional_tax_included
+                            additional_tax_rate
+                            discount_amount
+                            discount_rate
+                            discount_included
+                            merchant_tax_id
+                            tax_included
+                            unit_of_measure
+                        -->
+                        <set field="item" from="[amount:orderItem.unitAmount * orderItem.quantity, 
+                        description:orderItem.itemDescription, 
+                        debit_or_credit:'D', product_id: orderItem.productId, quantity: orderItem.quantity, 
+                        unit_cost: orderItem.unitAmount]"/>
+                    </if>
+                    
+                    <set field="discountAmount" from="discountAmount + (orderItem.unitAmount * orderItem.quantity)"/>
+                    <script>
+                        lineItems.add(item)
+                    </script>
+                </if>
+            </iterate>
+ 
+            <set field="discountAmount" from="discountAmount - payment.amount"/>
             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
+                <!--Missing to find data Visa
+                    tax_amount
+                    national_tax_amount
+                    merchant_tax_id
+                    customer_tax_id
+                    commodity_code
+                    freight_amount
+                    duty_amount
+                    additional_tax_amount
+                    additional_tax_rate
+                -->
                 <!-- assemble the full request Map -->
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, source_address:[zip:postalAddress.postalCode]]"/>
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, discount_amount:discountAmount , source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], line_items:[lineItems]]"/>
                 <set field="url" value="visa"/>
             </if>
 
             <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
+                <!--Missing to find data Mastercard
+                    tax_amount
+                    national_tax_amount
+                    freight_amount
+                    duty_amount
+                    freight_amount
+                    additional_tax_amount
+                    additional_tax_included
+                -->
                 <!-- assemble the full request Map -->
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.postalAddress.postalCode, country:orderInfo.postalAddress?.stateProvinceGeoId ? orderInfo.postalAddress?.stateProvinceGeoId.split('_')[0] : null]]"/>
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], 
+                line_items:lineItems]"/>
                 <set field="url" value="mastercard"/>
             </if>
 
