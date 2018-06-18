@@ -89,7 +89,7 @@
             <parameter name="paymentMethodId"/>
         </in-parameters>
         <out-parameters>
-            <parameter name="responseMap" type="Map"/>
+            <parameter name="lineItems" type="Map"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -111,7 +111,10 @@
             <set field="lineItems" from="[]"/>
             <set field="discountAmount" from="0"/>
             <iterate list="orderInfo.orderItemList" entry="orderItem">
-                <if condition="orderItem.productId != null">
+                <if condition="orderItem.productId != null &amp;&amp; orderItem.parentItemSeqId == null">
+
+                    <service-call name="mantle.order.OrderServices.get#OrderItemTotal" in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
+
                     <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
                         <!--Missing mto find in line item data Visa
                             additional_tax_amount
@@ -120,9 +123,10 @@
                             discount_amount
                             unit_of_measure
                         -->
-                        <set field="item" from="[amount: orderItem.unitAmount * orderItem.quantity, 
-                            description: orderItem.itemDescription, product_id: orderItem.productId, 
-                            quantity: orderItem.quantity, unit_cost: orderItem.unitAmount]"/>
+                        <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal, 
+                            description: orderItem.itemDescription.take(35), product_id: orderItem.productId, 
+                            quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
+                            unit_cost: orderItem.unitAmount ?: 0.0]"/>
                     </if>
 
                     <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
@@ -137,13 +141,14 @@
                             tax_included
                             unit_of_measure
                         -->
-                        <set field="item" from="[amount:orderItem.unitAmount * orderItem.quantity, 
-                        description:orderItem.itemDescription, 
-                        debit_or_credit:'D', product_id: orderItem.productId, quantity: orderItem.quantity, 
-                        unit_cost: orderItem.unitAmount]"/>
+
+                        <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal), 
+                        description:orderItem.itemDescription.take(35), 
+                        debit_or_credit: orderItemData.itemPlusChildrenTotal &lt; 0 ? 'C' : 'D' , product_id: orderItem.productId, quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
+                        unit_cost: orderItem.unitAmount ?: 0.0]"/>
                     </if>
                     
-                    <set field="discountAmount" from="discountAmount + (orderItem.unitAmount * orderItem.quantity)"/>
+                    <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
                     <script>
                         lineItems.add(item)
                     </script>
@@ -184,7 +189,7 @@
                 <set field="url" value="mastercard"/>
             </if>
 
-            <if condition="url == null">
+          <!--  <if condition="url == null">
                 <return error="true" message="the type of card is not a mastercard or visa. the level 3 data transaction will not continue"/>
             </if>
 
@@ -201,7 +206,7 @@
                     return
                 }
                 responseMap = restResponse.jsonObject()
-            ]]></script>
+            ]]></script> -->
         </actions>
     </service>
     <service verb="capture" noun="Payment">
