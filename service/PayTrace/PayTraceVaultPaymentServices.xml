@@ -89,7 +89,7 @@
             <parameter name="paymentMethodId"/>
         </in-parameters>
         <out-parameters>
-            <parameter name="lineItems" type="Map"/>
+            <parameter name="requestMap" type="Map"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -99,6 +99,13 @@
             
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
+
+            <set field="partyId" from="payment.fromPartyId"/>
+            <set field="partyIdTypeEnumId" from="'PtidFein'"/>
+            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyCustomer"/> 
+            
+            <set field="partyId" from="payment.toPartyId"/>
+            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyVendor"/>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
@@ -110,81 +117,91 @@
             
             <set field="lineItems" from="[]"/>
             <set field="discountAmount" from="0"/>
+            <set field="taxAmount" from="0"/>
+            <set field="freightAmount" from="0"/>
             <iterate list="orderInfo.orderItemList" entry="orderItem">
-                <if condition="orderItem.productId != null &amp;&amp; orderItem.parentItemSeqId == null">
-
-                    <service-call name="mantle.order.OrderServices.get#OrderItemTotal" in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
-
-                    <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
-                        <!--Missing mto find in line item data Visa
-                            additional_tax_amount
-                            additional_tax_rate
-                            commodity_code
-                            discount_amount
-                            unit_of_measure
-                        -->
-                        <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal, 
-                            description: orderItem.itemDescription.take(35), product_id: orderItem.productId, 
-                            quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
-                            unit_cost: orderItem.unitAmount ?: 0.0]"/>
-                    </if>
-
-                    <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
-                        <!--Missing to find in line item data Mastercard
-                            additional_tax_amount
-                            additional_tax_included
-                            additional_tax_rate
-                            discount_amount
-                            discount_rate
-                            discount_included
-                            merchant_tax_id
-                            tax_included
-                            unit_of_measure
-                        -->
-
-                        <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal), 
-                        description:orderItem.itemDescription.take(35), 
-                        debit_or_credit: orderItemData.itemPlusChildrenTotal &lt; 0 ? 'C' : 'D' , product_id: orderItem.productId, quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
-                        unit_cost: orderItem.unitAmount ?: 0.0]"/>
-                    </if>
+                <if condition="orderItem.parentItemSeqId == null">
                     
-                    <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
-                    <script>
-                        lineItems.add(item)
-                    </script>
+                    <if condition="orderItem.itemTypeEnumId == 'ItemShipping'">
+                        <set field="freightAmount" from="freightAmount + orderItem.unitAmount"/>
+                        <else>
+                            <service-call name="mantle.order.OrderServices.get#OrderItemTotal" in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
+                    
+                            <if condition="orderItem.itemTypeEnumId == 'ItemSalesTax' || orderItem.itemTypeEnumId == 'ItemVatTax'">
+                                <set field="taxAmount" from="taxAmount + orderItem.unitAmount"/>
+                            </if>
+
+
+
+                            <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
+                                <!--Missing mto find in line item data Visa
+                                    additional_tax_amount
+                                    additional_tax_rate
+                                    commodity_code
+                                    discount_amount
+                                    unit_of_measure
+                                -->
+                                <if condition="orderItemData.itemPlusChildrenTotal &gt;= 0">
+                                    <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal, 
+                                    description: orderItem.itemDescription.take(35), product_id: orderItem.productId, 
+                                    quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
+                                    unit_cost: orderItem.unitAmount ?: 0.0]"/>
+                                </if>
+                            </if>
+
+                            <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
+                                <!--Missing to find in line item data Mastercard
+                                    additional_tax_amount
+                                    additional_tax_included
+                                    additional_tax_rate
+                                    discount_amount
+                                    discount_rate
+                                    discount_included
+                                    merchant_tax_id
+                                    tax_included
+                                    unit_of_measure
+                                -->
+                                <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal), 
+                                description:orderItem.itemDescription.take(35), 
+                                debit_or_credit: orderItemData.itemPlusChildrenTotal &lt; 0 ? 'C' : 'D' , product_id: orderItem.productId, quantity: orderItem.quantity ? orderItem.quantity : 1.0, 
+                                unit_cost: orderItem.unitAmount ?: 0.0]"/>
+                            </if>
+                    
+                            <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
+
+                            <script>
+                                lineItems.add(item)
+                            </script>
+                        </else>
+                    </if>
                 </if>
             </iterate>
  
             <set field="discountAmount" from="discountAmount - payment.amount"/>
             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
                 <!--Missing to find data Visa
-                    tax_amount
-                    national_tax_amount
-                    merchant_tax_id
-                    customer_tax_id
-                    commodity_code
-                    freight_amount
-                    duty_amount
+                    national_tax_amount          for now it is ignored
+                    commodity_code               still not compatible
+                    duty_amount                  for now it is ignored
                     additional_tax_amount
                     additional_tax_rate
                 -->
                 <!-- assemble the full request Map -->
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, discount_amount:discountAmount , source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], line_items:[lineItems]]"/>
+                <set field="additionalTax" from="freightAmount + taxAmount"/>
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, tax_amount: taxAmount == 0 ? -1 : taxAmount, merchant_tax_id:partyVendor.idValue,customer_tax_id: partyCustomer.idValue, discount_amount:discountAmount, freight_amount:freightAmount, additional_tax_amount:additionalTax , source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], line_items:[lineItems]]"/>
                 <set field="url" value="visa"/>
             </if>
 
             <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
                 <!--Missing to find data Mastercard
-                    tax_amount
-                    national_tax_amount
-                    freight_amount
-                    duty_amount
-                    freight_amount
+                    national_tax_amount          for now it is ignored
+                    duty_amount                  for now it is ignored
                     additional_tax_amount
                     additional_tax_included
                 -->
                 <!-- assemble the full request Map -->
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], 
+                <set field="additionalTax" from="freightAmount + taxAmount"/>
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, customer_reference_id:paymentMethodId, tax_amount: taxAmount == 0 ? -1 : taxAmount, freight_amount:freightAmount, additional_tax_amount:additionalTax, additional_tax_included: additional_tax_amount == 0 ? false : true, source_address:[zip:postalAddress.postalCode], shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], 
                 line_items:lineItems]"/>
                 <set field="url" value="mastercard"/>
             </if>
