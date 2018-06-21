@@ -20,7 +20,7 @@
         <implements service="mantle.account.PaymentServices.authorize#Payment"/>
         <out-parameters>
             <parameter name="paymentGatewayResponseId"/>
-            <parameter name="responseMap" type="Map"/>
+            <parameter name="requestMap" type="Map"/>
             <parameter name="response" type="Map"/>
         </out-parameters>
         <actions>
@@ -44,9 +44,6 @@
                             in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
             <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
@@ -58,9 +55,12 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("by_customer").build()
+                    .addHeader("Authorization", "bearer ${token.token.access_token}")
+                    .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+
+                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(
+                    pgpt.apiVersion).path("transactions").path("authorization").path("by_customer").build()
+
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -78,7 +78,7 @@
             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa' 
                 || creditCard.creditCardTypeEnumId == 'CctMastercard'">
                 <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" in-map="[
-                paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, paymentMethodId:paymentMethodId]" out-map="response"/>
+                paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, paymentMethodId:paymentMethodId]" out-map="response"/> 
             </if>
         </actions>
     </service>
@@ -90,13 +90,23 @@
         </in-parameters>
         <out-parameters>
             <parameter name="requestMap" type="Map"/>
+            <parameter name="responseMap" type="Map"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
 
-            <set field="paymentRefNum" from="payment.paymentRefNum"/>
             <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+            <set field="paymentRefNum" from="payment.paymentRefNum"/>
+            <if condition="!paymentRefNum">
+                <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
+                <if condition="paymentGatewayResponse == null"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
+                <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
+            </if>
             
+            <if condition="!paymentRefNum">
+                <return error="true" message="Could not find successful authorization for Payment ${paymentId}"/>
+            </if>
+        
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
 
@@ -155,7 +165,6 @@
 
                             <!--PayTrace Unit of Measure http://help.paytrace.com/level3-unit-of-measure 
                                                                           PayTrace       Moqui Uom 
-                                Piece                                       PCE         OTH_ea, OTH_ct
                                 Acre                                        ACR         AREA_A
                                 Alcoholic strength by mass                  ASM         not found
                                 Alcoholic strength by volume                ASV         not found
@@ -200,7 +209,7 @@
                                 Decitonne                                   DTN         not found
                                 Degree Celsius                              CEL         TEMP_C
                                 Degree Fahrenheit                           FAH         TEMP_F
-                                Degree Kelvin:                              Kelvin      TEMP_K   
+                                Degree Kelvin:                              Kelvin      TEMP_K
                                 Displacement tonnage                        DPT         not found
                                 Dozen                                       DZN         not found
                                 Dozen packs                                 DZP         not found
@@ -309,88 +318,101 @@
                                 Minute                                      MIN         TF_min
                                 Month                                       MON         TF_mon
                                 Nautical mile (1852 m)                      NMI         LEN_nmi
-                                Net (register) ton                          NTT
-                                Newton                                      NEW
-                                Number                                      NMB
-                                Number of articles                          NAR
-                                Number of bobbons                           NBB
-                                Number of cells                             NCL
-                                Number of international units               NIU
-                                Number of packs                             NMP
-                                Number of pairs                             NMR
-                                Number of parcels                           NPL
-                                Number of parts                             NPT
-                                Number of rolls                             NRL
-Ohm OHM
-Ounce GB, US (28,349523 g)  ONZ
-Ounce GB, US (31,103448 g) (syn: Troy ounce)    APZ
-Pascal  PAL
-Pennyweight GB, US (1555174 g)  DWT
-Piece   PCE
-Pint (0,568262 dm3) PTI
-Pound GB, US (0,45359237 kg)    LBR
-Proof gallon    PGL
-Quart (1,136523 dm3)    QTI
-Quarter (of a year) QAN
-Quarter, GB (12,700586 kg)  QTR
-Quintal, metric (100 kg)    DTN
-Revolution per minute   RPM
-Revolution per second   RPS
-Score   SCO
-scruple, GB (1,2955982 g)   SCR
-Second  SEC
-Set SET
-Shipping ton    SHT
-Short standard (7200 matches)   SST
-Short ton GB, US (0,90718474 t) STN
-Siemens SIE
-Square centimetre   CMK
-Square decimetre    DMK
-Square foot FTK
-Square inch INK
-Square kilometre    KMK
-Square metre    MTK
-Square mile MIK
-Square millimetre   MMK
-Square yard YDK
-Standard    WSD
-standard atmosphere (101325 Pa) ATM
-(statue) mile (1609,344 m)  SMI
-Stone GB (6,350293 kg)  STI
-Technical atmosphere (98066,5 Pa)   ATT
-Ten days    DAD
-Ten pairs   TPR
-Thousand    MIL
-Thousand ampere-hour    TAH
-Thousand board feet (2,36 m3)   MBF
-Thousand cubic metres per day   TQD
-Thousand standard brick equivalent  MBE
-Ton of steam per hour   TSH
-Tonne (1000 kg) TNE
-Tonne of substance 90 percent dry   TSD
-Trillion EUR    TRL
-Trillion US BIL
-Troy ounce  APZ
-Troy pound, US (373,242 g)  LBT
-Volt    VLT
-Watt    WTT
-Watt-hour   WHR
-Weber   WEB
-Week    WEE
-Yard (0,9144 m) YRD
-Year
-
+                                Net (register) ton                          NTT         not found
+                                Newton                                      NEW         not found
+                                Number                                      NMB         not found
+                                Number of articles                          NAR         not found
+                                Number of bobbons                           NBB         not found
+                                Number of cells                             NCL         not found
+                                Number of international units               NIU         not found
+                                Number of packs                             NMP         not found
+                                Number of pairs                             NMR         not found
+                                Number of parcels                           NPL         not found
+                                Number of parts                             NPT         not found
+                                Number of rolls                             NRL         not found
+                                Ohm                                         OHM         not found
+                                Ounce GB, US (28,349523 g)                  ONZ         WT_oz
+                                Ounce GB, US (31,103448 g)                  APZ         WT_oz_tr
+                                Pascal                                      PAL         PRES_Pa
+                                Pennyweight GB, US (1555174 g)              DWT         WT_dwt
+                                Piece                                       PCE         OTH_ea, OTH_ct
+                                Pint (0,568262 dm3)                         PTI         VLIQ_ptUS
+                                Pound GB, US (0,45359237 kg)                LBR         WT_lb
+                                Proof gallon                                PGL         not found
+                                Quart (1,136523 dm3)                        QTI         VLIQ_qt
+                                Quarter (of a year)                         QAN         not found
+                                Quarter, GB (12,700586 kg)                  QTR         not found
+                                Quintal, metric (100 kg)                    DTN         not found
+                                Revolution per minute                       RPM         OTH_RPM
+                                Revolution per second                       RPS         not found
+                                Score                                       SCO         TF_score
+                                cruple, GB (1,2955982 g)                    SCR         not found
+                                Second                                      SEC         TF_s
+                                Set                                         SET         not found
+                                Shipping ton                                SHT         not found
+                                Short standard (7200 matches)               SST         not found
+                                Short ton GB, US (0,90718474 t)             STN         WT_sh_t
+                                Siemens                                     SIE         not found
+                                Square centimetre                           CMK         AREA_cm2
+                                Square decimetre                            DMK         not found
+                                Square foot                                 FTK         AREA_ft2
+                                Square inch                                 INK         AREA_in2
+                                Square kilometre                            KMK         AREA_km2
+                                Square metre                                MTK         AREA_m2
+                                Square mile                                 MIK         AREA_mi2
+                                Square millimetre                           MMK         AREA_mm2
+                                Square yard                                 YDK         AREA_yd2
+                                Standard                                    WSD         not found
+                                standard atmosphere (101325 Pa)             ATM         PRES_atm
+                                (statute) mile (1609,344 m)                 SMI         LEN_mi
+                                Stone GB (6,350293 kg)                      STI         WT_st
+                                Technical atmosphere (98066,5 Pa)           ATT         PRES_at
+                                Ten days                                    DAD         not found
+                                Ten pairs                                   TPR         not found
+                                Thousand                                    MIL         not found
+                                Thousand ampere-hour                        TAH         not found
+                                Thousand board feet (2,36 m3)               MBF         not found
+                                Thousand cubic metres per day               TQD         not found
+                                Thousand standard brick equivalent          MBE         not found
+                                Ton of steam per hour                       TSH         not found
+                                Tonne (1000 kg)                             TNE         not found
+                                Tonne of substance 90 percent dry           TSD         not found
+                                Trillion EUR                                TRL         not found
+                                Trillion US                                 BIL         not found
+                                Troy ounce                                  APZ         WT_oz_tr
+                                Troy pound, US (373,242 g)                  LBT         not found
+                                Volt                                        VLT         not found
+                                Watt                                        WTT         PW_w
+                                Watt-hour                                   WHR         not found
+                                Weber                                       WEB         not found
+                                Week                                        WEE         TF_wk
+                                Yard (0,9144 m)                             YRD         LEN_yd
+                                Year                                        ANN         TF_yr
                             -->
-                            <if condition="product.amountUomId == 'OTH_ea' || product.amountUomId == 'OTH_ct'">
-                                <set field="unitMeasure" from="PCE"/>
-                            </if>
+
+                            <set field="unitMeasureMap" from="[AREA_A:'ACR', OTH_A:'AMP', AREA_m2:'ARE',
+                                PRES_bar:'BAR',VLIQ_bbl:'BLL', EN_BTU:'BTU', OTH_cd:'CDL', VDRY_cm3:'CMQ', 
+                                VDRY_ft3:'FTQ', VDRY_in3:'INQ', VDRY_mm3:'MMQ', VDRY_yd3:'YDQ', TF_day:'DAY',
+                                TF_decade:'DEC', TEMP_C:'CEL', TEMP_F:'FAH', TEMP_K:'Kelvin', VLIQ_ozUK:'OZI',
+                                VLIQ_ozUS:'OZA', LEN_ft:'FOT', VLIQ_galUS:'GLI', VLIQ_gi:'GII', WT_gr:'GRN', 
+                                WT_g:'GRM', AREA_ha:'HAR', TF_hr:'HUR', LEN_in:'INH', EN_J:'JOU', TEMP_K:'KEL',
+                                DENS_kg_m3:'KMQ', WT_kg:'KGM', PRES_kPa:'KPA', PW_kw:'KWT', EN_kw_h:'KWH', 
+                                VEL_kn:'KNT', VLIQ_galUS:'GLL', VLIQ_ptUS:'PTL', VLIQ_qt:'QTL', WT_lt:'LTN',
+                                WT_mt:'TNE', PRES_mbar:'MBR', WT_mg:'MGM', TF_min:'MIN', TF_mon:'MON', LEN_nmi:'NMI',
+                                WT_oz:'ONZ', WT_oz_tr:'APZ', PRES_Pa:'PAL', WT_dwt:'DWT', OTH_ea:'PCE', OTH_ct:'PCE', 
+                                VLIQ_ptUS:'PTI', WT_lb:'LBR', VLIQ_qt:'QTI', OTH_RPM:'RPM', TF_score:'SCO',
+                                TF_s:'SEC', WT_sh_t:'STN', AREA_cm2:'CMK', AREA_ft2:'FTK', AREA_in2:'INK',
+                                AREA_km2:'KMK', AREA_m2:'MTK', AREA_mi2:'MIK', AREA_mm2:'MMK', AREA_yd2:'YDK',
+                                PRES_atm:'ATM', LEN_mi:'SMI', WT_st:'STI', PRES_at:'ATT', WT_oz_tr:'APZ', PW_w:'WTT',
+                                TF_wk:'WEE', LEN_yd:'YRD', TF_yr:'ANN']"/>  
+                                                                                                                                                                                                                                                                                                               
+                            <set field="unitMeasure" from="unitMeasureMap.get(product.amountUomId.trim())"/>                                                                                        
 
                             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
                                 <!--Missing to find in line item data Visa
                                     additional_tax_amount         has not been used yet
                                     additional_tax_rate           has not been used yet
                                     commodity_code                for now it is ignored
-                                    unit_of_measure
                                 -->
 
                                 <if condition="orderItemData.itemPlusChildrenTotal &gt;= 0">
@@ -406,7 +428,6 @@ Year
                                     additional_tax_amount         has not been used yet
                                     additional_tax_included       has not been used yet
                                     additional_tax_rate           has not been used yet
-                                    unit_of_measure
                                 -->
                                 
                                 <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal), 
@@ -449,24 +470,28 @@ Year
                 <set field="url" value="mastercard"/>
             </if>
 
-          <!--  <if condition="url == null">
+            <if condition="url == null">
                 <return error="true" message="the type of card is not a mastercard or visa. the level 3 data transaction will not continue"/>
             </if>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("level_three").path(url).build()
+                    .addHeader("Authorization", "bearer ${token.token.access_token}")
+                    .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+
+                restClient.uri().protocol("https").host(pgpt.hostName).port(443)
+                    .path(pgpt.apiVersion).path("level_three").path(url).build()
+
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
                     ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace API error"+restResponse)
                     return
                 }
+
                 responseMap = restResponse.jsonObject()
-            ]]></script> -->
+            ]]></script> 
         </actions>
     </service>
     <service verb="capture" noun="Payment">
