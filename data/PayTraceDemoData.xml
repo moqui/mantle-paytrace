@@ -7,14 +7,6 @@
             releaseServiceName="PayTrace.PayTraceVaultPaymentServices.release#Payment"
             refundServiceName="PayTrace.PayTraceVaultPaymentServices.refund#Payment"/>
 
-    <!-- Services that do not use the PayTrace Vault.
-        <mantle.account.method.PaymentGatewayConfig paymentGatewayConfigId="PayTraceDemo"
-            paymentGatewayTypeEnumId="PgtPayTrace" description="PayTrace demo"
-            authorizeServiceName="PayTrace.PayTracePaymentServices.authorize#Payment"
-            captureServiceName="PayTrace.PayTracePaymentServices.capture#Payment"
-            releaseServiceName="PayTrace.PayTracePaymentServices.release#Payment"
-            refundServiceName="PayTrace.PayTracePaymentServices.refund#Payment"/>-->
-
       <PayTrace.PaymentGatewayPayTrace paymentGatewayConfigId="PayTraceDemo"
               hostName="api.paytrace.com" username="demo123" password="demo123" integratorId="" apiVersion="v1"/>
 
