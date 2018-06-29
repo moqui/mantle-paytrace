@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <entity-facade-xml type="demo">
     <mantle.account.method.PaymentGatewayConfig paymentGatewayConfigId="PayTraceDemo"
-            paymentGatewayTypeEnumId="PgtPayTrace" description="PayTrace demo"
+            paymentGatewayTypeEnumId="PgtPayTrace" description="PayTrace Demo"
             authorizeServiceName="PayTrace.PayTraceVaultPaymentServices.authorize#Payment"
             captureServiceName="PayTrace.PayTraceVaultPaymentServices.capture#Payment"
             releaseServiceName="PayTrace.PayTraceVaultPaymentServices.release#Payment"

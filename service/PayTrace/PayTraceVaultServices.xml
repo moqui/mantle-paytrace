@@ -78,13 +78,18 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="url" value="customer/create"/>
             </else></if>
 
-            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
-            <set field="requestMap" from="[customer_id:(paymentMethod.gatewayCimId ?: paymentMethodId),
+            <!-- NOTE: adds random extension to paymentMethodId just in case some error and already stored? have seen error: errors:[171:[Please provide a unique customer ID.]] -->
+            <set field="customerId" from="paymentMethod.gatewayCimId ?: (paymentMethodId + '_' + getRandomString(5))"/>
+            <set field="requestMap" from="[customer_id:customerId,
                     credit_card:[number:cardNumber, expiration_month:expireMonth, expiration_year:expireYear],
-                    billing_address:[name:paymentMethod.titleOnAccount, street_address:postalAddress.address1, city:postalAddress.city,
+                    billing_address:[name:(postalAddress.toName ?: postalAddress.attnName),
+                        street_address:postalAddress.address1, city:postalAddress.city,
                         state:postalAddress?.stateProvinceGeoId ? postalAddress.stateProvinceGeoId.substring(postalAddress.stateProvinceGeoId.indexOf('_')+1) : null,
                         zip:postalAddress.postalCode]]"/>
 
+            <log message="PayTrace Vault store for payment method ${paymentMethodId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(requestMap))}"/>
+
+            <service-call name="PayTrace.PayTracePaymentServices.login#PayTrace" in-map="context" out-map="token"/>
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
                         .addHeader("Authorization", "Bearer ${token.token.access_token}")

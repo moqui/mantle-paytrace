@@ -20,8 +20,7 @@
         <implements service="mantle.account.PaymentServices.authorize#Payment"/>
         <out-parameters>
             <parameter name="paymentGatewayResponseId"/>
-            <parameter name="requestMap" type="Map"/>
-            <parameter name="response" type="Map"/>
+            <!-- <parameter name="requestMap" type="Map"/><parameter name="response" type="Map"/> -->
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -48,18 +47,20 @@
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
+            <set field="accessToken" from="token.token.access_token"/>
 
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id: pgpt.integratorId]"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                    .addHeader("Authorization", "bearer ${token.token.access_token}")
+                    .addHeader("Authorization", "Bearer ${accessToken}")
                     .addHeader("Content-Type", "application/json").jsonObject(requestMap)
 
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(
-                    pgpt.apiVersion).path("transactions").path("authorization").path("by_customer").build()
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("authorization").path("by_customer").build()
 
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
@@ -74,19 +75,21 @@
             <set field="paymentOperationEnumId" value="PgoAuthorize"/>
 
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
-            
-            <if condition="creditCard.creditCardTypeEnumId == 'CctVisa' 
-                || creditCard.creditCardTypeEnumId == 'CctMastercard'">
-                <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" in-map="[
-                paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, paymentMethodId:paymentMethodId]" out-map="response"/> 
+
+            <!-- TODO: only send for larger amounts? -->
+            <if condition="creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
+                <!-- NOTE: called async for performance reasons, secondary priority to auth, and to keep errors from causing problems with the auth -->
+                <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" async="true"
+                        in-map="[paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, accessToken:accessToken]"/>
             </if>
         </actions>
     </service>
-    <service verb="send" noun="LevelThreeData">
+    <service verb="send" noun="LevelThreeData" authenticate="anonymous-all">
+        <!-- NOTE: anonymous-all so that can be called async, do not expose externally -->
         <in-parameters>
-            <parameter name="paymentId"/>
-            <parameter name="paymentGatewayConfigId"/>
-            <parameter name="paymentMethodId"/>
+            <parameter name="paymentId" required="true"/>
+            <parameter name="paymentGatewayConfigId" required="true"/>
+            <parameter name="accessToken" required="true"/>
         </in-parameters>
         <out-parameters>
             <parameter name="requestMap" type="Map"/>
@@ -96,6 +99,7 @@
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
 
             <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
+            <set field="paymentMethodId" from="paymentMethod.paymentMethodId"/>
             <set field="paymentRefNum" from="payment.paymentRefNum"/>
             <if condition="!paymentRefNum">
                 <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
@@ -103,370 +107,215 @@
                 <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
             </if>
             
-            <if condition="!paymentRefNum">
-                <return error="true" message="Could not find successful authorization for Payment ${paymentId}"/>
-            </if>
+            <if condition="!paymentRefNum"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
         
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
+            <!-- return now if not Visa or Mastercard -->
+            <if condition="!(creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard'])"><return/></if>
+
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
 
+            <!-- TODO: not even close, bad setting the partyId like this and totally missing the partyIdTypeEnumId in ['PtidFein', others?] -->
             <set field="partyId" from="payment.fromPartyId"/>
             <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyCustomer"/> 
-            
             <set field="partyId" from="payment.toPartyId"/>
             <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyVendor"/>
 
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
 
             <set field="orderId" from="payment.orderId"/>
 
             <service-call name="mantle.order.OrderInfoServices.get#OrderDisplayInfo" in-map="[orderId:orderId]" out-map="orderInfo"/>
             
             <set field="lineItems" from="[]"/>
-            <set field="discountAmount" from="0"/>
-            <set field="taxAmount" from="0"/>
-            <set field="freightAmount" from="0"/>
-            <set field="taxRate" from="0"/>
+            <set field="discountAmount" from="0.0"/>
+            <set field="taxAmount" from="0.0"/>
+            <set field="freightAmount" from="0.0"/>
+            <set field="taxRate" from="0.0"/>
 
             <iterate list="orderInfo.orderItemList" entry="orderItem">
-                <if condition="orderItem.parentItemSeqId == null">
-                    
-                    <if condition="orderItem.itemTypeEnumId == 'ItemShipping'">
-                        <set field="freightAmount" from="freightAmount + orderItem.unitAmount"/>
-                    <else>
+                <if condition="orderItem.parentItemSeqId"><continue/></if>
+                
+                <if condition="orderItem.itemTypeEnumId == 'ItemShipping'"><then>
+                    <set field="freightAmount" from="freightAmount + orderItem.unitAmount"/>
+                </then><else>
+                    <set field="productId" from="orderItem.productId"/>
+                    <entity-find-one entity-name="mantle.product.Product" value-field="product"/>
 
-                        <set field="productId" from="orderItem.productId"/>
-                        <entity-find-one entity-name="mantle.product.Product" value-field="product"/>
+                    <service-call name="mantle.order.OrderServices.get#OrderItemTotal"
+                        in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
 
-                        <service-call name="mantle.order.OrderServices.get#OrderItemTotal" 
-                            in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
-                    
-                        <if condition="orderItem.itemTypeEnumId == 'ItemSalesTax' || orderItem.itemTypeEnumId == 
-                            'ItemVatTax'">
-                            <set field="taxAmount" from="taxAmount + orderItem.unitAmount"/>
-                        </if>
-                        <set field="taxRate" from="taxRate + (orderItem.sourcePercentage ? orderItem.sourcePercentage 
-                            : 0.0)"/>
+                    <if condition="orderItem.itemTypeEnumId == 'ItemSalesTax' || orderItem.itemTypeEnumId == 'ItemVatTax'">
+                        <set field="taxAmount" from="taxAmount + orderItem.unitAmount"/></if>
+                    <set field="taxRate" from="taxRate + (orderItem.sourcePercentage ? orderItem.sourcePercentage : 0.0)"/>
 
-                        <set field="taxIncluded" from="false"/>
-                        <set field="quantityDiscount" from="0"/>
+                    <set field="taxIncluded" from="false"/>
+                    <set field="quantityDiscount" from="0.0"/>
 
-                        <iterate list="orderItemData.childOrderItemList" entry="childOrderItem">
-                            <if condition="childOrderItem.itemTypeEnumId == 'ItemSalesTax' ||    
-                                childOrderItem.itemTypeEnumId == 'ItemVatTax'">
-                                <set field="taxIncluded" from="true"/>
-                            </if>
+                    <iterate list="orderItemData.childOrderItemList" entry="childOrderItem">
+                        <if condition="childOrderItem.itemTypeEnumId == 'ItemSalesTax' || childOrderItem.itemTypeEnumId == 'ItemVatTax'">
+                            <set field="taxIncluded" from="true"/></if>
 
-                            <if condition="childOrderItem.itemTypeEnumId == 'ItemDiscount' ||
-                                childOrderItem.itemTypeEnumId == 'ItemSupplierDiscount'">
-                                <set field="quantityDiscount" from="quantityDiscount + childOrderItem.quantity"/>
-                            </if>
-                        </iterate>
+                        <if condition="childOrderItem.itemTypeEnumId == 'ItemDiscount' || childOrderItem.itemTypeEnumId == 'ItemSupplierDiscount'">
+                            <set field="quantityDiscount" from="quantityDiscount + childOrderItem.quantity"/></if>
+                    </iterate>
 
-                        <!--PayTrace Unit of Measure http://help.paytrace.com/level3-unit-of-measure 
-                                                                    PayTrace       Moqui Uom 
-                            Acre                                        ACR         AREA_A
-                            Alcoholic strength by mass                  ASM         not found
-                            Alcoholic strength by volume                ASV         not found
-                            Ampere                                      AMP         OTH_A
-                            Ampere=hour                                 AMH         not found
-                            Are (100 m2)                                ARE         AREA_m2
-                            Bar                                         BAR         PRES_bar
-                            Barrel (petroleum)                          BLL         VLIQ_bbl
-                            Becquerel                                   BQL         not found
-                            Billion EUR                                 BIL         not found
-                            Billion US                                  MLD         not found
-                            Board foot                                  BFT         not found
-                            Brake horse power (245,7 watts)             BHP         not found
-                            British thermal unit                        BTU         EN_BTU
-                            Bushel (35,2391 dm3)                        BUA         not found
-                            Bushel (36,36874 dm3)                       BUI         not found
-                            Candela                                     CDL         OTH_cd
-                            Carrying capacity in metric tonnes          CCT         not found
-                            Cental GB (45,359237 kg)                    CNT         not found
-                            Center, metric (100 kg)                     DTN         not found
-                            Centigram                                   CGM         not found
-                            Centilitre                                  CLT         not found
-                            Centimetre                                  CMT         not found
-                            Cord (3,63 m3)                              WCD         not found
-                            Coulomb per kilogram                        CKG         not found
-                            Coulomb                                     COU         not found
-                            Cubic centimetre                            CMQ         VDRY_cm3
-                            Cubic decimetre                             DMQ         not found
-                            Cubic foot                                  FTQ         VDRY_ft3
-                            Cubic inch                                  INQ         VDRY_in3
-                            Cubic metre per hour                        MQH         not found
-                            Cubic metre per second                      MQS         not found
-                            Cubic metre                                 MTQ         not found
-                            Cubic millimetre                            MMQ         VDRY_mm3
-                            Cubic yard                                  YDQ         VDRY_yd3
-                            Curie                                       CUR         not found
-                            Day                                         DAY         TF_day
-                            Decade (ten years)                          DEC         TF_decade
-                            Decare                                      DAA         not found
-                            Decilitre                                   DLT         not found
-                            Decimetre                                   DMT         not found
-                            Decitonne                                   DTN         not found
-                            Degree Celsius                              CEL         TEMP_C
-                            Degree Fahrenheit                           FAH         TEMP_F
-                            Degree Kelvin:                              Kelvin      TEMP_K
-                            Displacement tonnage                        DPT         not found
-                            Dozen                                       DZN         not found
-                            Dozen packs                                 DZP         not found
-                            Dozen pairs                                 DZR         not found
-                            Dozen pieces                                DCP         not found
-                            Dozen rolls                                 DRL         not found
-                            Drachm GB (3,887935 g)                      DRM         not found
-                            Dram GB (1,771745 g)                        DRI         not found
-                            Dram US (3,887935 g)                        DRA         not found
-                            Dry Barrel (115,627 dm3)                    BLD         not found
-                            Dry gallon (4,404884 dm3)                   GLD         not found
-                            Dry pint (0,55061 dm3)                      PTD         not found
-                            Dry quart (1,101221 dm3)                    QTD         not found
-                            Farad                                       FAR         not found
-                            Fluid ounce (28,413 cm3)                    OZI         VLIQ_ozUK
-                            Fluid ounce (29,5735 cm3)                   OZA         VLIQ_ozUS
-                            Foot (0,3048 m)                             FOT         LEN_ft
-                            Gallon (4,546092 dm3)                       GLI         VLIQ_galUS
-                            Gigabecquerel                               GBQ         not found
-                            Gigawatt-hour (1 million kW/h)              GWH         not found
-                            Gill (0,142065 dm3)                         GII         VLIQ_gi
-                            Gill (11,8294 cm3)                          GIA         not found
-                            Grain GB, US (64,798910 mg)                 GRN         WT_gr
-                            Gram of fissile isotopes                    GFI         not found
-                            Gram                                        GRM         WT_g
-                            Great gross (12 gross)                      GGR         not found
-                            Gross                                       GRO         not found
-                            Gross (register) ton                        GRT         not found
-                            Half year (six months)                      SAN         not found
-                            Hectare                                     HAR         AREA_ha
-                            Hectobar                                    HBA         not found
-                            Hectogram                                   HGM         not found
-                            Hectokilogram                               DTH         not found
-                            Hectolitre of pure alcohol                  HPA         not found
-                            Hectolitre                                  HLT         not found
-                            Hectometre                                  HMT         not found
-                            Hertz                                       HTZ         not found
-                            Hour                                        HUR         TF_hr
-                            Hundred                                     CEN         not found
-                            Hundred boxes                               BHX         not found
-                            Hundred international units                 HIU         not found
-                            Hundred leaves                              CLF         not found
-                            Hundred packs                               CNP         not found
-                            Hundredweight US (45,3592 kg)               CWA         not found  
-                            Inch (25,4 mm)                              INH         LEN_in
-                            Joule                                       JOU         EN_J
-                            Kelvin                                      KEL         TEMP_K
-                            Kilobar                                     KBA         not found 
-                            Kilogram of caustic potash                  KPH         not found
-                            Kilogram of caustic soda                    KSH         not found
-                            Kilogram of named substance                 KNS         not found
-                            Kilogram of nitrogen                        KNI         not found
-                            Kilogram of phosphonic anhydride            KPP         not found
-                            Kilogram of phosphorus pentoxide            KPP         not found
-                            Kilogram of potassium hydroxide             KPH         not found
-                            Kilogram of potassium oxide                 KPO         not found
-                            Kilogram of sodium hydroxide                KSH         not found
-                            Kilogram of substance 90 percent dry        KSD         not found
-                            Kilogram per cubic meter                    KMQ         DENS_kg_m3
-                            Kilogram per second                         KGS         not found
-                            Kilogram                                    KGM         WT_kg
-                            Kilohertz                                   KHZ         not found
-                            Kilojoule                                   KJO         not found
-                            Kilometre per hour                          KMH         not found
-                            Kilometre                                   KMT         not found
-                            Kilopascal                                  KPA         PRES_kPa
-                            Kilorgram of uranium                        KUR         not found
-                            Kilotonne                                   KTN         not found
-                            Kilovar                                     KVR         not found
-                            Kilovolt                                    KVT         not found
-                            Kilovolt-ampere                             KVA         not found
-                            Kilowatt                                    KWT         PW_kw
-                            Kilowatt-hour                               KWH         EN_kw_h
-                            Knot (1 nautical mile per hour)             KNT         VEL_kn
-                            Leaf                                        LEF         not found
-                            Liquid gallon (3,78541 dm3)                 GLL         VLIQ_galUS
-                            Liquid pint (0,473176 dm3)                  PTL         VLIQ_ptUS
-                            Liquid quart (0,946353 dm3)                 QTL         VLIQ_qt
-                            Litre (1 dm3)                               LTR         not found
-                            Litre of pure alcohol                       LPA         not found
-                            Long ton GB, US (1,0160469 t)               LTN         WT_lt
-                            (long) hundredweight GB (50,802345 kg)      CWI         not found
-                            Lumen                                       LUM         not found
-                            Lux                                         LUX         not found
-                            Megahertz                                   MHZ         not found
-                            Megalitre                                   MAL         not found
-                            Megametre                                   MAM         not found
-                            Megapascal                                  MPA         not found
-                            Megavolt-ampere (1000 KVA)                  MVA         not found
-                            Megawatt                                    MAW         not found
-                            Megawatt-hour (100 kW/h)                    MWH         not found
-                            Metre per second squared                    MSK         not found
-                            Metre per second                            MTS         not found
-                            Metre                                       MTR         not found
-                            Metric carat (200 mg=2,10-4 kg)             CTM         not found
-                            Metric ton (1000 kg)                        TNE         WT_mt
-                            Milliard                                    MLD         not found 
-                            Millibar                                    MBR         PRES_mbar
-                            Millicurie                                  MCU         not found
-                            Milligram                                   MGM         WT_mg
-                            Millilitre                                  MLT         not found
-                            Millimetre                                  MMT         not found
-                            Million                                     MIO         not found
-                            Million cubic metres                        HMQ         not found
-                            Million international units                 MIU         not found
-                            Minute                                      MIN         TF_min
-                            Month                                       MON         TF_mon
-                            Nautical mile (1852 m)                      NMI         LEN_nmi
-                            Net (register) ton                          NTT         not found
-                            Newton                                      NEW         not found
-                            Number                                      NMB         not found
-                            Number of articles                          NAR         not found
-                            Number of bobbons                           NBB         not found
-                            Number of cells                             NCL         not found
-                            Number of international units               NIU         not found
-                            Number of packs                             NMP         not found
-                            Number of pairs                             NMR         not found
-                            Number of parcels                           NPL         not found
-                            Number of parts                             NPT         not found
-                            Number of rolls                             NRL         not found
-                            Ohm                                         OHM         not found
-                            Ounce GB, US (28,349523 g)                  ONZ         WT_oz
-                            Ounce GB, US (31,103448 g)                  APZ         WT_oz_tr
-                            Pascal                                      PAL         PRES_Pa
-                            Pennyweight GB, US (1555174 g)              DWT         WT_dwt
-                            Piece                                       PCE         OTH_ea, OTH_ct
-                            Pint (0,568262 dm3)                         PTI         VLIQ_ptUS
-                            Pound GB, US (0,45359237 kg)                LBR         WT_lb
-                            Proof gallon                                PGL         not found
-                            Quart (1,136523 dm3)                        QTI         VLIQ_qt
-                            Quarter (of a year)                         QAN         not found
-                            Quarter, GB (12,700586 kg)                  QTR         not found
-                            Quintal, metric (100 kg)                    DTN         not found
-                            Revolution per minute                       RPM         OTH_RPM
-                            Revolution per second                       RPS         not found
-                            Score                                       SCO         TF_score
-                            cruple, GB (1,2955982 g)                    SCR         not found
-                            Second                                      SEC         TF_s
-                            Set                                         SET         not found
-                            Shipping ton                                SHT         not found
-                            Short standard (7200 matches)               SST         not found
-                            Short ton GB, US (0,90718474 t)             STN         WT_sh_t
-                            Siemens                                     SIE         not found
-                            Square centimetre                           CMK         AREA_cm2
-                            Square decimetre                            DMK         not found
-                            Square foot                                 FTK         AREA_ft2
-                            Square inch                                 INK         AREA_in2
-                            Square kilometre                            KMK         AREA_km2
-                            Square metre                                MTK         AREA_m2
-                            Square mile                                 MIK         AREA_mi2
-                            Square millimetre                           MMK         AREA_mm2
-                            Square yard                                 YDK         AREA_yd2
-                            Standard                                    WSD         not found
-                            standard atmosphere (101325 Pa)             ATM         PRES_atm
-                            (statute) mile (1609,344 m)                 SMI         LEN_mi
-                            Stone GB (6,350293 kg)                      STI         WT_st
-                            Technical atmosphere (98066,5 Pa)           ATT         PRES_at
-                            Ten days                                    DAD         not found
-                            Ten pairs                                   TPR         not found
-                            Thousand                                    MIL         not found
-                            Thousand ampere-hour                        TAH         not found
-                            Thousand board feet (2,36 m3)               MBF         not found
-                            Thousand cubic metres per day               TQD         not found
-                            Thousand standard brick equivalent          MBE         not found
-                            Ton of steam per hour                       TSH         not found
-                            Tonne (1000 kg)                             TNE         not found
-                            Tonne of substance 90 percent dry           TSD         not found
-                            Trillion EUR                                TRL         not found
-                            Trillion US                                 BIL         not found
-                            Troy ounce                                  APZ         WT_oz_tr
-                            Troy pound, US (373,242 g)                  LBT         not found
-                            Volt                                        VLT         not found
-                            Watt                                        WTT         PW_w
-                            Watt-hour                                   WHR         not found
-                            Weber                                       WEB         not found
-                            Week                                        WEE         TF_wk
-                            Yard (0,9144 m)                             YRD         LEN_yd
-                            Year                                        ANN         TF_yr
+                    <!--PayTrace Unit of Measure
+                        see complete list at: http://help.paytrace.com/level3-unit-of-measure
+
+                                                                PayTrace       Moqui Uom
+                        Acre                                        ACR         AREA_A
+                        Ampere                                      AMP         OTH_A
+                        Bar                                         BAR         PRES_bar
+                        Barrel (petroleum)                          BLL         VLIQ_bbl
+                        British thermal unit                        BTU         EN_BTU
+                        Candela                                     CDL         OTH_cd
+                        Cubic centimetre                            CMQ         VDRY_cm3
+                        Cubic foot                                  FTQ         VDRY_ft3
+                        Cubic inch                                  INQ         VDRY_in3
+                        Cubic millimetre                            MMQ         VDRY_mm3
+                        Cubic yard                                  YDQ         VDRY_yd3
+                        Day                                         DAY         TF_day
+                        Decade (ten years)                          DEC         TF_decade
+                        Degree Celsius                              CEL         TEMP_C
+                        Degree Fahrenheit                           FAH         TEMP_F
+                        Fluid ounce (28,413 cm3)                    OZI         VLIQ_ozUK
+                        Fluid ounce (29,5735 cm3)                   OZA         VLIQ_ozUS
+                        Foot (0,3048 m)                             FOT         LEN_ft
+                        Gill (0,142065 dm3)                         GII         VLIQ_gi
+                        Grain GB, US (64,798910 mg)                 GRN         WT_gr
+                        Gram                                        GRM         WT_g
+                        Hectare                                     HAR         AREA_ha
+                        Hour                                        HUR         TF_hr
+                        Inch (25,4 mm)                              INH         LEN_in
+                        Joule                                       JOU         EN_J
+                        Kelvin                                      KEL         TEMP_K
+                        Kilogram per cubic meter                    KMQ         DENS_kg_m3
+                        Kilogram                                    KGM         WT_kg
+                        Kilopascal                                  KPA         PRES_kPa
+                        Kilowatt                                    KWT         PW_kw
+                        Kilowatt-hour                               KWH         EN_kw_h
+                        Knot (1 nautical mile per hour)             KNT         VEL_kn
+                        Liquid gallon (3,78541 dm3)                 GLL         VLIQ_galUS
+                        Liquid pint (0,473176 dm3)                  PTL         VLIQ_ptUS
+                        Liquid quart (0,946353 dm3)                 QTL         VLIQ_qt
+                        Litre (1 dm3)                               LTR         VLIQ_L
+                        Long ton GB, US (1,0160469 t)               LTN         WT_lt
+                        Metre per second                            MTS         not found
+                        Metre                                       MTR         LEN_m
+                        Metric ton (1000 kg)                        TNE         WT_mt
+                        Millibar                                    MBR         PRES_mbar
+                        Milligram                                   MGM         WT_mg
+                        Minute                                      MIN         TF_min
+                        Month                                       MON         TF_mon
+                        Nautical mile (1852 m)                      NMI         LEN_nmi
+                        Ounce GB, US (28,349523 g)                  ONZ         WT_oz
+                        Pascal                                      PAL         PRES_Pa
+                        Pennyweight GB, US (1555174 g)              DWT         WT_dwt
+                        Piece                                       PCE         OTH_ea, OTH_ct
+                        Pound GB, US (0,45359237 kg)                LBR         WT_lb
+                        Quart (1,136523 dm3)                        QTI         VLIQ_qt
+                        Revolution per minute                       RPM         OTH_RPM
+                        Score                                       SCO         TF_score
+                        Second                                      SEC         TF_s
+                        Short ton GB, US (0,90718474 t)             STN         WT_sh_t
+                        Square centimetre                           CMK         AREA_cm2
+                        Square foot                                 FTK         AREA_ft2
+                        Square inch                                 INK         AREA_in2
+                        Square kilometre                            KMK         AREA_km2
+                        Square metre                                MTK         AREA_m2
+                        Square mile                                 MIK         AREA_mi2
+                        Square millimetre                           MMK         AREA_mm2
+                        Square yard                                 YDK         AREA_yd2
+                        standard atmosphere (101325 Pa)             ATM         PRES_atm
+                        (statute) mile (1609,344 m)                 SMI         LEN_mi
+                        Stone GB (6,350293 kg)                      STI         WT_st
+                        Technical atmosphere (98066,5 Pa)           ATT         PRES_at
+                        Troy ounce                                  APZ         WT_oz_tr
+                        Watt                                        WTT         PW_w
+                        Week                                        WEE         TF_wk
+                        Yard (0,9144 m)                             YRD         LEN_yd
+                        Year                                        ANN         TF_yr
+                    -->
+
+                    <set field="unitMeasureMap" from="[AREA_A:'ACR', OTH_A:'AMP',
+                        PRES_bar:'BAR',VLIQ_bbl:'BLL', EN_BTU:'BTU', OTH_cd:'CDL', VDRY_cm3:'CMQ',
+                        VDRY_ft3:'FTQ', VDRY_in3:'INQ', VDRY_mm3:'MMQ', VDRY_yd3:'YDQ', TF_day:'DAY',
+                        TF_decade:'DEC', TEMP_C:'CEL', TEMP_F:'FAH', VLIQ_ozUK:'OZI',
+                        VLIQ_ozUS:'OZA', LEN_ft:'FOT', VLIQ_gi:'GII', WT_gr:'GRN',
+                        WT_g:'GRM', AREA_ha:'HAR', TF_hr:'HUR', LEN_in:'INH', EN_J:'JOU', TEMP_K:'KEL',
+                        DENS_kg_m3:'KMQ', WT_kg:'KGM', PRES_kPa:'KPA', PW_kw:'KWT', EN_kw_h:'KWH',
+                        VEL_kn:'KNT', VLIQ_galUS:'GLL', VLIQ_ptUS:'PTL', VLIQ_qt:'QTL', VLIQ_L:'LTR', WT_lt:'LTN', LEN_m:'MTR',
+                        WT_mt:'TNE', PRES_mbar:'MBR', WT_mg:'MGM', TF_min:'MIN', TF_mon:'MON', LEN_nmi:'NMI',
+                        WT_oz:'ONZ', PRES_Pa:'PAL', WT_dwt:'DWT', OTH_ea:'PCE', OTH_ct:'PCE',
+                        WT_lb:'LBR', OTH_RPM:'RPM', TF_score:'SCO',
+                        TF_s:'SEC', WT_sh_t:'STN', AREA_cm2:'CMK', AREA_ft2:'FTK', AREA_in2:'INK',
+                        AREA_km2:'KMK', AREA_m2:'MTK', AREA_mi2:'MIK', AREA_mm2:'MMK', AREA_yd2:'YDK',
+                        PRES_atm:'ATM', LEN_mi:'SMI', WT_st:'STI', PRES_at:'ATT', WT_oz_tr:'APZ', PW_w:'WTT',
+                        TF_wk:'WEE', LEN_yd:'YRD', TF_yr:'ANN']"/>
+
+                    <set field="unitMeasure" from="unitMeasureMap.get(product.amountUomId) ?: 'PCE'"/>
+
+                    <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
+                        <!--Missing to find in line item data Visa
+                            additional_tax_amount         has not been used yet
+                            additional_tax_rate           has not been used yet
+                            commodity_code                for now it is ignored
                         -->
 
-                        <set field="unitMeasureMap" from="[AREA_A:'ACR', OTH_A:'AMP', AREA_m2:'ARE',
-                            PRES_bar:'BAR',VLIQ_bbl:'BLL', EN_BTU:'BTU', OTH_cd:'CDL', VDRY_cm3:'CMQ', 
-                            VDRY_ft3:'FTQ', VDRY_in3:'INQ', VDRY_mm3:'MMQ', VDRY_yd3:'YDQ', TF_day:'DAY',
-                            TF_decade:'DEC', TEMP_C:'CEL', TEMP_F:'FAH', TEMP_K:'Kelvin', VLIQ_ozUK:'OZI',
-                            VLIQ_ozUS:'OZA', LEN_ft:'FOT', VLIQ_galUS:'GLI', VLIQ_gi:'GII', WT_gr:'GRN', 
-                            WT_g:'GRM', AREA_ha:'HAR', TF_hr:'HUR', LEN_in:'INH', EN_J:'JOU', TEMP_K:'KEL',
-                            DENS_kg_m3:'KMQ', WT_kg:'KGM', PRES_kPa:'KPA', PW_kw:'KWT', EN_kw_h:'KWH', 
-                            VEL_kn:'KNT', VLIQ_galUS:'GLL', VLIQ_ptUS:'PTL', VLIQ_qt:'QTL', WT_lt:'LTN',
-                            WT_mt:'TNE', PRES_mbar:'MBR', WT_mg:'MGM', TF_min:'MIN', TF_mon:'MON', LEN_nmi:'NMI',
-                            WT_oz:'ONZ', WT_oz_tr:'APZ', PRES_Pa:'PAL', WT_dwt:'DWT', OTH_ea:'PCE', OTH_ct:'PCE', 
-                            VLIQ_ptUS:'PTI', WT_lb:'LBR', VLIQ_qt:'QTI', OTH_RPM:'RPM', TF_score:'SCO',
-                            TF_s:'SEC', WT_sh_t:'STN', AREA_cm2:'CMK', AREA_ft2:'FTK', AREA_in2:'INK',
-                            AREA_km2:'KMK', AREA_m2:'MTK', AREA_mi2:'MIK', AREA_mm2:'MMK', AREA_yd2:'YDK',
-                            PRES_atm:'ATM', LEN_mi:'SMI', WT_st:'STI', PRES_at:'ATT', WT_oz_tr:'APZ', PW_w:'WTT',
-                            TF_wk:'WEE', LEN_yd:'YRD', TF_yr:'ANN']"/>  
-                                                                                                                                                                                                                                                                                                               
-                        <set field="unitMeasure" from="unitMeasureMap.get(product.amountUomId.trim())"/>                                                                                        
-
-                        <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
-                            <!--Missing to find in line item data Visa
-                                additional_tax_amount         has not been used yet
-                                additional_tax_rate           has not been used yet
-                                commodity_code                for now it is ignored
-                            -->
-
-                            <if condition="orderItemData.itemPlusChildrenTotal &gt;= 0">
-                                <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal, 
-                                description: orderItem.itemDescription.take(35), product_id: orderItem.productId, 
-                                quantity: orderItem.quantity ? orderItem.quantity : 1.0, unit_of_measure: unitMeasure
-                                ?: 'PCE',
-                                unit_cost: orderItem.unitAmount ?: 0.0, discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal]"/>
-                            </if>
+                        <!-- TODO: discount_amount needs to look at child items for type ItemDiscount, itemTotal - itemPlusChildrenTotal is NOT correct (may also included taxes and other charges) -->
+                        <if condition="orderItemData.itemPlusChildrenTotal &gt;= 0.0">
+                            <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal,
+                                description: orderItem.itemDescription?.take(35), product_id: orderItem.productId,
+                                quantity: (orderItem.quantity ? orderItem.quantity : 1.0), unit_of_measure: (unitMeasure ?: 'PCE'),
+                                unit_cost: (orderItem.unitAmount ?: 0.0), discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal]"/>
                         </if>
-
-                        <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
-                            <!--Missing to find in line item data Mastercard
-                                additional_tax_amount         has not been used yet
-                                additional_tax_included       has not been used yet
-                                additional_tax_rate           has not been used yet
-                            -->
-                                
-                            <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal), 
-                                description:orderItem.itemDescription.take(35), discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal, discount_rate:Math.round(Math.abs(orderItemData.childrenTotal) * 100  / orderItemData.itemTotal),  
-                                debit_or_credit: orderItemData.itemPlusChildrenTotal &lt; 0 ? 'C' : 'D', merchant_tax_id:partyVendor.idValue, product_id: orderItem.productId, quantity: orderItem.quantity ? orderItem.quantity : 1.0, tax_included:taxIncluded, discount_included: quantityDiscount &gt; 0 ? true : false , unit_cost: orderItem.unitAmount ?: 0.0, unit_of_measure: unitMeasure ?: 'PCE']"/>
-                        </if>
-                    
-                        <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
-
-                        <script>
-                            lineItems.add(item)
-                        </script>
-                    </else>
                     </if>
-                </if>
+                    <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
+                        <!--Missing to find in line item data Mastercard
+                            additional_tax_amount         has not been used yet
+                            additional_tax_included       has not been used yet
+                            additional_tax_rate           has not been used yet
+                        -->
+
+                        <!-- TODO: discount_amount needs to look at child items for type ItemDiscount, itemTotal - itemPlusChildrenTotal is NOT correct (may also included taxes and other charges) -->
+                        <!-- TODO: discount_rate should use BigDecimal math and be rounded -->
+                        <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal),
+                            description:orderItem.itemDescription?.take(35),
+                            discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal,
+                            discount_rate: Math.round(Math.abs(orderItemData.childrenTotal) * 100  / orderItemData.itemTotal),
+                            debit_or_credit: (orderItemData.itemPlusChildrenTotal &lt; 0.0 ? 'C' : 'D'),
+                            merchant_tax_id:partyVendor?.idValue, product_id: orderItem.productId,
+                            quantity: (orderItem.quantity ? orderItem.quantity : 1.0), tax_included:taxIncluded,
+                            discount_included: (quantityDiscount &gt; 0.0), unit_cost: (orderItem.unitAmount ?: 0.0),
+                            unit_of_measure: unitMeasure ?: 'PCE']"/>
+                    </if>
+
+                    <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
+
+                    <script>lineItems.add(item)</script>
+                </else></if>
             </iterate>
- 
+
+            <!-- TODO: what? discountAmount - payment.amount makes no sense -->
             <set field="discountAmount" from="discountAmount - payment.amount"/>
             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
                 <!--Visa Data
                     national_tax_amount          for now it is ignored
-                    commodity_code               still not compatible
+                    commodity_code               not yet supported, may have to be specific to the payment processor and by product
                     duty_amount                  for now it is ignored
                 -->
                 <!-- assemble the full request Map -->
                 <set field="additionalTax" from="freightAmount + taxAmount"/>
                 <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, 
-                    customer_reference_id:paymentMethodId, tax_amount: taxAmount == 0 ? -1 : taxAmount, 
-                    merchant_tax_id:partyVendor.idValue,customer_tax_id: partyCustomer.idValue,
+                    customer_reference_id:paymentMethodId, tax_amount: (taxAmount == 0.0 ? -1 : taxAmount),
+                    merchant_tax_id:partyVendor?.idValue, customer_tax_id: partyCustomer?.idValue,
                     discount_amount:discountAmount, freight_amount:freightAmount, additional_tax_amount:additionalTax, 
-                    additional_tax_rate: taxRate, source_address:[zip:postalAddress.postalCode], shipping_address:[
-                    zip:orderInfo.orderPartInfoList.postalAddress.postalCode,
-                    country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? 
-                    orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null],
-                    line_items:[lineItems]]"/>
-                <set field="url" value="visa"/>
+                    additional_tax_rate: taxRate, source_address:[zip:postalAddress.postalCode],
+                    shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.countyGeoId],
+                    line_items:lineItems]"/>
+                <set field="typePath" value="visa"/>
             </if>
 
             <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
@@ -477,28 +326,24 @@
                 <!-- assemble the full request Map -->
                 <set field="additionalTax" from="freightAmount + taxAmount"/>
                 <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, 
-                    customer_reference_id:paymentMethodId, tax_amount: taxAmount == 0 ? -1 : taxAmount, 
-                    freight_amount:freightAmount, additional_tax_amount:additionalTax, additional_tax_included: 
-                    additionalTax &gt; 0 ? true : false, source_address:[zip:postalAddress.postalCode], 
-                    shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode,
-                    country:orderInfo.orderPartInfoList.postalAddress?.stateProvinceGeoId ? 
-                    orderInfo.orderPartInfoList.postalAddress.stateProvinceGeoId.toString().substring(1, 4) : null], 
+                    customer_reference_id:paymentMethodId, tax_amount: (taxAmount == 0 ? -1 : taxAmount),
+                    freight_amount:freightAmount, additional_tax_amount:additionalTax,
+                    additional_tax_included:(additionalTax &gt; 0.0), source_address:[zip:postalAddress.postalCode],
+                    shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.countyGeoId],
                     line_items:lineItems]"/>
-                <set field="url" value="mastercard"/>
+                <set field="typePath" value="mastercard"/>
             </if>
 
-            <if condition="url == null">
-                <return error="true" message="the type of card is not a mastercard or visa. the level 3 data 
-                    transaction will not continue"/>
-            </if>
+            <if condition="!typePath"><return message="the type of card is not a mastercard or visa. the level 3 data transaction will not continue"/></if>
+
+            <log message="PayTrace Level 3 data for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(requestMap))}"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                    .addHeader("Authorization", "bearer ${token.token.access_token}")
-                    .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443)
-                    .path(pgpt.apiVersion).path("level_three").path(url).build()
+                        .addHeader("Authorization", "Bearer ${accessToken}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("level_three").path(typePath).build()
 
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
@@ -546,13 +391,14 @@
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
                 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("authorization").path("capture").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("authorization").path("capture").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -604,16 +450,17 @@
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id: pgpt.integratorId]"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("sale").path("by_customer").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("sale").path("by_customer").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -654,13 +501,14 @@
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("refund").path("to_customer").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("refund").path("to_customer").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -709,15 +557,16 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[transaction_id:paymentRefNum]"/>
 
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <set field="paymentOperationEnumId" value="PgoRelease"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("void").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("void").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -760,13 +609,14 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[transaction_id:referenceNum]"/>
 
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.payTrace#login" in-map="context" out-map="token"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                .addHeader("Authorization", "bearer ${token.token.access_token}")
-                .addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path(pgpt.apiVersion).path("transactions").path("export").path("by_id").build()
+                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
+                        .path("transactions").path("export").path("by_id").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
@@ -847,26 +697,23 @@
 
             <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                 in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId, 
-                paymentId:paymentId, paymentMethodId:paymentMethodId, 
-                amount:payment.amount, amountUomId:payment?.amountUomId, referenceNum:referenceNum, 
-                approvalCode:approvalCode, responseCode:responseCode, 
-                reasonCode:reasonCode, reasonMessage:reasonMessage, 
-                avsResult:avsResult, cvResult:cvResult, 
-                transactionDate:ec.user.nowTimestamp, 
-                resultSuccess:(reasonCode == 101 || reasonCode == 112 ? 'Y' : 'N'), resultDeclined:(responseMap.reasonCode == 102 || reasonCode == 113 ? 'Y' : 'N'), 
-                resultError:(reasonCode == 1 ? 'Y' : 'N'), 
-                resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'), 
-                resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>        
+                    paymentId:paymentId, paymentMethodId:paymentMethodId,
+                    amount:payment.amount, amountUomId:payment?.amountUomId, referenceNum:referenceNum,
+                    approvalCode:approvalCode, responseCode:responseCode,
+                    reasonCode:reasonCode, reasonMessage:reasonMessage,
+                    avsResult:avsResult, cvResult:cvResult,
+                    transactionDate:ec.user.nowTimestamp,
+                    resultSuccess:(reasonCode in [101, 106, 108, 109, 112, 120, 122, 124] ? 'Y' : 'N'),
+                    resultDeclined:(reasonCode in [102, 103, 107, 110, 113, 125] ? 'Y' : 'N'),
+                    resultError:(reasonCode == 1 ? 'Y' : 'N'),
+                    resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'),
+                    resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>
         </actions>
     </service>
 
-    <service verb="payTrace" noun="login">
-        <in-parameters>
-            <parameter name="paymentGatewayConfigId"/>
-        </in-parameters>
-        <out-parameters>
-            <parameter name="token" type="Map"/>
-        </out-parameters>
+    <service verb="login" noun="PayTrace">
+        <in-parameters><parameter name="paymentGatewayConfigId"/></in-parameters>
+        <out-parameters><parameter name="token" type="Map"/></out-parameters>
         <actions>
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
@@ -874,8 +721,10 @@
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[grant_type:'password',username:pgpt.username,password:pgpt.password]"/>
             <script><![CDATA[
-                org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST).addHeader("Content-Type", "application/json").jsonObject(requestMap)
-                restClient.uri().protocol("https").host(pgpt.hostName).port(443).path("oauth").path("token").build()
+                org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
+                        .addHeader("Content-Type", "application/json").jsonObject(requestMap)
+                restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443)
+                        .path("oauth").path("token").build()
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
