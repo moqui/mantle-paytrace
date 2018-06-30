@@ -15,6 +15,7 @@
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-2.1.xsd">
 
     <!-- These services are based on the PayTrace API, version 1. See: http://help.paytrace.com/api -->
+    <!-- REST API docs: https://developers.paytrace.com/support/home -->
 
     <service verb="authorize" noun="Payment">
         <implements service="mantle.account.PaymentServices.authorize#Payment"/>
@@ -31,9 +32,7 @@
             </if>
                 
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
-            <if condition="!cardSecurityCode">
-                <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
-            </if>
+            <if condition="!cardSecurityCode"><set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/></if>
 
             <set field="visit" from="payment.'moqui.server.Visit'"/>
 
@@ -52,7 +51,9 @@
             <set field="accessToken" from="token.token.access_token"/>
 
             <!-- assemble the full request Map -->
-            <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id: pgpt.integratorId]"/>
+            <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id:pgpt.integratorId, invoice_id:payment.orderId]"/>
+            <if condition="cardSecurityCode"><set field="requestMap.csc" from="cardSecurityCode"/></if>
+            <log message="PayTrace Authorize request for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(requestMap))}"/>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -65,19 +66,18 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Authorize API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
-                
-            <set field="paymentOperationEnumId" value="PgoAuthorize"/>
+            <log message="PayTrace Authorize response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
+            <set field="paymentOperationEnumId" value="PgoAuthorize"/>
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
 
-            <!-- TODO: only send for larger amounts? -->
-            <if condition="creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
+            <!-- NOTE: only send for larger amounts? -->
+            <if condition="payment.orderId &amp;&amp; creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
                 <!-- NOTE: called async for performance reasons, secondary priority to auth, and to keep errors from causing problems with the auth -->
                 <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" async="true"
                         in-map="[paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, accessToken:accessToken]"/>
@@ -89,76 +89,106 @@
         <in-parameters>
             <parameter name="paymentId" required="true"/>
             <parameter name="paymentGatewayConfigId" required="true"/>
-            <parameter name="accessToken" required="true"/>
+            <parameter name="accessToken"/>
         </in-parameters>
         <out-parameters>
-            <parameter name="requestMap" type="Map"/>
-            <parameter name="responseMap" type="Map"/>
+            <!-- <parameter name="requestMap" type="Map"/><parameter name="responseMap" type="Map"/> -->
         </out-parameters>
         <actions>
+            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/>
+            <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
+
+            <if condition="!payment.orderId"><return/></if>
 
             <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             <set field="paymentMethodId" from="paymentMethod.paymentMethodId"/>
             <set field="paymentRefNum" from="payment.paymentRefNum"/>
             <if condition="!paymentRefNum">
                 <service-call name="mantle.account.PaymentServices.get#AuthorizePaymentGatewayResponse" in-map="context" out-map="context"/>
-                <if condition="paymentGatewayResponse == null"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
+                <if condition="paymentGatewayResponse == null"><return type="danger" message="Could not find successful authorization for Payment ${paymentId}"/></if>
                 <set field="paymentRefNum" from="paymentGatewayResponse.referenceNum"/>
             </if>
             
-            <if condition="!paymentRefNum"><return error="true" message="Could not find successful authorization for Payment ${paymentId}"/></if>
+            <if condition="!paymentRefNum"><return type="danger" message="Could not find successful authorization for Payment ${paymentId}"/></if>
         
             <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
             <!-- return now if not Visa or Mastercard -->
             <if condition="!(creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard'])"><return/></if>
 
+            <if condition="!accessToken">
+                <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
+                <set field="accessToken" from="token.token.access_token"/>
+            </if>
+
             <set field="postalAddress" from="paymentMethod.'mantle.party.contact.PostalAddress'"/>
 
-            <!-- TODO: not even close, bad setting the partyId like this and totally missing the partyIdTypeEnumId in ['PtidFein', others?] -->
-            <set field="partyId" from="payment.fromPartyId"/>
-            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyCustomer"/> 
-            <set field="partyId" from="payment.toPartyId"/>
-            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="partyVendor"/>
-
-            <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
-            <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
+            <!-- get tax IDs: partyIdTypeEnumId in ['PtidFein', others?] for now just PtidFein -->
+            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="taxIdentCustomer">
+                <field-map field-name="partyId" from="payment.fromPartyId"/>
+                <field-map field-name="partyIdTypeEnumId" value="PtidFein"/>
+            </entity-find-one>
+            <entity-find-one entity-name="mantle.party.PartyIdentification" value-field="taxIdentVendor">
+                <field-map field-name="partyId" from="payment.toPartyId"/>
+                <field-map field-name="partyIdTypeEnumId" value="PtidFein"/>
+            </entity-find-one>
 
             <set field="orderId" from="payment.orderId"/>
-
+            <set field="orderPartSeqId" from="payment.orderPartSeqId"/>
             <service-call name="mantle.order.OrderInfoServices.get#OrderDisplayInfo" in-map="[orderId:orderId]" out-map="orderInfo"/>
+            <set field="orderPartInfo" from="orderPartSeqId ? orderInfo.orderPartInfoList.find({ it.orderPart.orderPartSeqId == orderPartSeqId }) : orderInfo.orderPartInfoList.first()"/>
             
             <set field="lineItems" from="[]"/>
-            <set field="discountAmount" from="0.0"/>
-            <set field="taxAmount" from="0.0"/>
+            <set field="orderDiscount" from="0.0"/>
+            <set field="orderTaxAmount" from="0.0"/>
+            <set field="freightTax" from="0.0"/>
             <set field="freightAmount" from="0.0"/>
-            <set field="taxRate" from="0.0"/>
 
             <iterate list="orderInfo.orderItemList" entry="orderItem">
                 <if condition="orderItem.parentItemSeqId"><continue/></if>
-                
+                <if condition="orderItem.quantity == 0.0"><continue/></if>
+
+                <service-call name="mantle.order.OrderServices.get#OrderItemTotal" out-map-add-to-existing="false"
+                        in-map="[orderItem:orderItem, getChildrenTotals:true]" out-map="orderItemData"/>
+
                 <if condition="orderItem.itemTypeEnumId == 'ItemShipping'"><then>
-                    <set field="freightAmount" from="freightAmount + orderItem.unitAmount"/>
+                    <set field="freightAmount" from="freightAmount + orderItemData.itemTotal"/>
+
+                    <iterate list="orderItemData.childOrderItemList" entry="childOrderItem">
+                        <set field="combinedQuantity" from="(childOrderItem.quantity != null ? childOrderItem.quantity : 1.0) * (childOrderItem.selectedAmount ?: 1.0)"/>
+                        <set field="childItemTotal" from="(combinedQuantity * (childOrderItem.unitAmount ?: 0.0)).setScale(2, BigDecimal.ROUND_HALF_UP)"/>
+                        <if condition="childOrderItem.itemTypeEnumId in ['ItemSalesTax', 'ItemVatTax']">
+                            <set field="freightTax" from="orderTaxAmount + childItemTotal"/>
+                        </if>
+                    </iterate>
                 </then><else>
                     <set field="productId" from="orderItem.productId"/>
                     <entity-find-one entity-name="mantle.product.Product" value-field="product"/>
 
-                    <service-call name="mantle.order.OrderServices.get#OrderItemTotal"
-                        in-map="[orderItem:orderItem,getChildrenTotals:true]" out-map="orderItemData"/>
-
-                    <if condition="orderItem.itemTypeEnumId == 'ItemSalesTax' || orderItem.itemTypeEnumId == 'ItemVatTax'">
-                        <set field="taxAmount" from="taxAmount + orderItem.unitAmount"/></if>
-                    <set field="taxRate" from="taxRate + (orderItem.sourcePercentage ? orderItem.sourcePercentage : 0.0)"/>
+                    <if condition="orderItem.itemTypeEnumId in ['ItemSalesTax', 'ItemVatTax']">
+                        <set field="orderTaxAmount" from="orderTaxAmount + orderItemData.itemTotal"/>
+                        <continue/>
+                    </if>
 
                     <set field="taxIncluded" from="false"/>
                     <set field="quantityDiscount" from="0.0"/>
+                    <set field="itemDiscount" from="0.0"/>
 
                     <iterate list="orderItemData.childOrderItemList" entry="childOrderItem">
-                        <if condition="childOrderItem.itemTypeEnumId == 'ItemSalesTax' || childOrderItem.itemTypeEnumId == 'ItemVatTax'">
-                            <set field="taxIncluded" from="true"/></if>
+                        <set field="combinedQuantity" from="(childOrderItem.quantity != null ? childOrderItem.quantity : 1.0) * (childOrderItem.selectedAmount ?: 1.0)"/>
+                        <set field="childItemTotal" from="(combinedQuantity * (childOrderItem.unitAmount ?: 0.0)).setScale(2, BigDecimal.ROUND_HALF_UP)"/>
 
-                        <if condition="childOrderItem.itemTypeEnumId == 'ItemDiscount' || childOrderItem.itemTypeEnumId == 'ItemSupplierDiscount'">
-                            <set field="quantityDiscount" from="quantityDiscount + childOrderItem.quantity"/></if>
+                        <if condition="childOrderItem.itemTypeEnumId in ['ItemSalesTax', 'ItemVatTax']">
+                            <set field="taxIncluded" from="true"/>
+                            <set field="orderTaxAmount" from="orderTaxAmount + childItemTotal"/>
+                        </if>
+
+                        <if condition="childOrderItem.itemTypeEnumId in ['ItemDiscount', 'ItemSupplierDiscount']">
+                            <set field="quantityDiscount" from="quantityDiscount + childOrderItem.quantity"/>
+                            <set field="itemDiscount" from="itemDiscount + childItemTotal"/>
+                            <set field="orderDiscount" from="orderDiscount + childItemTotal"/>
+                        </if>
                     </iterate>
 
                     <!--PayTrace Unit of Measure
@@ -264,12 +294,11 @@
                             commodity_code                for now it is ignored
                         -->
 
-                        <!-- TODO: discount_amount needs to look at child items for type ItemDiscount, itemTotal - itemPlusChildrenTotal is NOT correct (may also included taxes and other charges) -->
                         <if condition="orderItemData.itemPlusChildrenTotal &gt;= 0.0">
                             <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal,
                                 description: orderItem.itemDescription?.take(35), product_id: orderItem.productId,
-                                quantity: (orderItem.quantity ? orderItem.quantity : 1.0), unit_of_measure: (unitMeasure ?: 'PCE'),
-                                unit_cost: (orderItem.unitAmount ?: 0.0), discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal]"/>
+                                quantity: (orderItem.quantity ?: 1.0), unit_of_measure: (unitMeasure ?: 'PCE'),
+                                unit_cost: (orderItem.unitAmount ?: 0.0), discount_amount: itemDiscount.abs()]"/>
                         </if>
                     </if>
                     <if condition="creditCard.creditCardTypeEnumId == 'CctMastercard'">
@@ -279,27 +308,22 @@
                             additional_tax_rate           has not been used yet
                         -->
 
-                        <!-- TODO: discount_amount needs to look at child items for type ItemDiscount, itemTotal - itemPlusChildrenTotal is NOT correct (may also included taxes and other charges) -->
-                        <!-- TODO: discount_rate should use BigDecimal math and be rounded -->
-                        <set field="item" from="[amount: Math.abs(orderItemData.itemPlusChildrenTotal),
+                        <set field="item" from="[amount: orderItemData.itemPlusChildrenTotal,
                             description:orderItem.itemDescription?.take(35),
-                            discount_amount: orderItemData.itemTotal - orderItemData.itemPlusChildrenTotal,
-                            discount_rate: Math.round(Math.abs(orderItemData.childrenTotal) * 100  / orderItemData.itemTotal),
+                            discount_amount: itemDiscount.abs(), discount_included: (quantityDiscount &gt; 0.0),
+                            discount_rate: itemDiscount.abs().multiply(100.0).divide(orderItemData.itemTotal, 2, BigDecimal.ROUND_HALF_UP),
                             debit_or_credit: (orderItemData.itemPlusChildrenTotal &lt; 0.0 ? 'C' : 'D'),
-                            merchant_tax_id:partyVendor?.idValue, product_id: orderItem.productId,
-                            quantity: (orderItem.quantity ? orderItem.quantity : 1.0), tax_included:taxIncluded,
-                            discount_included: (quantityDiscount &gt; 0.0), unit_cost: (orderItem.unitAmount ?: 0.0),
+                            merchant_tax_id: taxIdentVendor?.idValue, product_id: orderItem.productId,
+                            quantity: (orderItem.quantity ?: 1.0),
+                            tax_included:taxIncluded,
+                            unit_cost: (orderItem.unitAmount ?: 0.0),
                             unit_of_measure: unitMeasure ?: 'PCE']"/>
                     </if>
-
-                    <set field="discountAmount" from="discountAmount + Math.abs(orderItemData.itemPlusChildrenTotal)"/>
 
                     <script>lineItems.add(item)</script>
                 </else></if>
             </iterate>
 
-            <!-- TODO: what? discountAmount - payment.amount makes no sense -->
-            <set field="discountAmount" from="discountAmount - payment.amount"/>
             <if condition="creditCard.creditCardTypeEnumId == 'CctVisa'">
                 <!--Visa Data
                     national_tax_amount          for now it is ignored
@@ -307,13 +331,15 @@
                     duty_amount                  for now it is ignored
                 -->
                 <!-- assemble the full request Map -->
-                <set field="additionalTax" from="freightAmount + taxAmount"/>
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, 
-                    customer_reference_id:paymentMethodId, tax_amount: (taxAmount == 0.0 ? -1 : taxAmount),
-                    merchant_tax_id:partyVendor?.idValue, customer_tax_id: partyCustomer?.idValue,
-                    discount_amount:discountAmount, freight_amount:freightAmount, additional_tax_amount:additionalTax, 
-                    additional_tax_rate: taxRate, source_address:[zip:postalAddress.postalCode],
-                    shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.countyGeoId],
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId,
+                    customer_reference_id:orderPartInfo.orderPart.otherPartyOrderId,
+                    tax_amount: (orderTaxAmount == 0.0 ? -1 : orderTaxAmount),
+                    merchant_tax_id:taxIdentVendor?.idValue, customer_tax_id: taxIdentCustomer?.idValue,
+                    discount_amount:orderDiscount.abs(),
+                    freight_amount:freightAmount, additional_tax_amount:freightTax,
+                    additional_tax_rate: (freightTax.abs().multiply(100.0).divide(freightAmount, 2, BigDecimal.ROUND_HALF_UP)),
+                    source_address:[zip:postalAddress.postalCode],
+                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:orderPartInfo.postalAddress?.countryGeoId],
                     line_items:lineItems]"/>
                 <set field="typePath" value="visa"/>
             </if>
@@ -324,12 +350,12 @@
                     duty_amount                  for now it is ignored
                 -->
                 <!-- assemble the full request Map -->
-                <set field="additionalTax" from="freightAmount + taxAmount"/>
-                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId, 
-                    customer_reference_id:paymentMethodId, tax_amount: (taxAmount == 0 ? -1 : taxAmount),
-                    freight_amount:freightAmount, additional_tax_amount:additionalTax,
-                    additional_tax_included:(additionalTax &gt; 0.0), source_address:[zip:postalAddress.postalCode],
-                    shipping_address:[zip:orderInfo.orderPartInfoList.postalAddress.postalCode, country:orderInfo.orderPartInfoList.postalAddress?.countyGeoId],
+                <set field="requestMap" from="[transaction_id:paymentRefNum, invoice_id:orderId,
+                    customer_reference_id:orderPartInfo.orderPart.otherPartyOrderId,
+                    tax_amount: (orderTaxAmount == 0.0 ? -1 : orderTaxAmount),
+                    freight_amount:freightAmount, additional_tax_amount:freightTax, additional_tax_included:(freightTax &gt; 0.0),
+                    source_address:[zip:postalAddress.postalCode],
+                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:orderPartInfo.postalAddress?.countryGeoId],
                     line_items:lineItems]"/>
                 <set field="typePath" value="mastercard"/>
             </if>
@@ -348,13 +374,16 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error"+restResponse)
+                    ec.message.addMessage("PayTrace Level 3 API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
 
                 responseMap = restResponse.jsonObject()
-            ]]></script> 
+            ]]></script>
+            <log message="PayTrace Level 3 response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
+
+            <set field="paymentOperationEnumId" value="PgoLevel3Data"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
         </actions>
     </service>
     <service verb="capture" noun="Payment">
@@ -372,9 +401,6 @@
                 <service-call name="PayTrace.PayTraceVaultServices.store#CustomerPaymentMethod" in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
             <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
 
             <set field="paymentRefNum" from="payment.paymentRefNum"/>
@@ -402,12 +428,12 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Capture API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
+            <log message="PayTrace Capture response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <set field="paymentOperationEnumId" value="PgoCapture"/>
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -436,11 +462,7 @@
                             in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
             <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
-
 
             <if condition="!cardSecurityCode">
                 <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
@@ -453,7 +475,9 @@
             <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
             <!-- assemble the full request Map -->
-            <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id: pgpt.integratorId]"/>
+            <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id:pgpt.integratorId, invoice_id:payment.orderId]"/>
+            <log message="PayTrace Auth and Capture request for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(requestMap))}"/>
+            <if condition="cardSecurityCode"><set field="requestMap.csc" from="cardSecurityCode"/></if>
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
@@ -464,12 +488,12 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Auth and Capture API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
+            <log message="PayTrace Auth and Capture response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <set field="paymentOperationEnumId" value="PgoAuthAndCapture"/>
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -490,9 +514,6 @@
                 <set field="cardSecurityCode" from="creditCard?.cardSecurityCode"/>
             </if>
                 
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
             <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
 
             <!-- assemble the full request Map -->
@@ -512,12 +533,12 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Refund API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
+            <log message="PayTrace Refund response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <set field="paymentOperationEnumId" value="PgoRefund"/>
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
@@ -538,9 +559,6 @@
                             in-map="[paymentMethodId:paymentMethod.paymentMethodId, paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId]"/>
                 <set field="paymentMethod" from="payment.'mantle.account.method.PaymentMethod'"/>
             </if>
-            <!-- get party after CIM check so that gatewayCimId will be populated -->
-            <set field="party" from="paymentMethod.'Owner#mantle.party.Party'"/>
-            <if condition="!party.gatewayCimId"><return message="Party ${party.partyId} has no gateway CIM ID, not processing payment"/></if>
             <if condition="!paymentMethod.gatewayCimId"><return message="Payment Method ${paymentMethod.paymentMethodId} has no gateway CIM ID, not processing payment"/></if>
  
             <entity-find-one entity-name="PayTrace.PaymentGatewayPayTrace" value-field="pgpt"/> 
@@ -559,8 +577,6 @@
 
             <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
 
-            <set field="paymentOperationEnumId" value="PgoRelease"/>
-
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
                         .addHeader("Authorization", "Bearer ${token.token.access_token}")
@@ -570,15 +586,15 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Release API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
-                
-            <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
+            <log message="PayTrace Level 3 response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
+            <set field="paymentOperationEnumId" value="PgoRelease"/>
+            <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
         </actions>
     </service>
     <service verb="get" noun="PaymentGatewayDetails">
@@ -620,12 +636,12 @@
                 org.moqui.util.RestClient.RestResponse restResponse = restClient.call()
                     
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 500) {
-                    ec.logger.error("PayTrace API response ${restResponse.statusCode}")
-                    ec.message.addMessage("PayTrace API error")
+                    ec.message.addMessage("PayTrace Transaction Status API error ${restResponse.statusCode}: ${restResponse.text()}")
                     return
                 }
                 responseMap = restResponse.jsonObject()
             ]]></script>
+            <log message="PayTrace Transaction Status response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <!-- PayTrace transactionType values and corresponding Payment statusId to determine needed action:
             
@@ -689,11 +705,18 @@
             <set field="cvResult" from="responseMap.csc_response"/>
             <set field="reasonCode" from="responseMap.response_code"/>
             <set field="reasonMessage" from="responseMap.status_message"/>
-            <set field="referenceNum" from="responseMap.transaction_id"/>
-            <set field="errors" from="responseMap?.errors"/>
+            <set field="referenceNum" from="responseMap.transaction_id ?: payment?.paymentRefNum"/>
+
+            <set field="errors" from="responseMap.errors"/>
             <set field="badCardNumber" from="errors?.'35'"/>
             <set field="badExpireMonth" from="errors?.'43'"/>
             <set field="badExpireYear" from="errors?.'44'"/>
+
+            <!-- add other messages to reasonMessage -->
+            <if condition="responseMap.approval_message"><set field="reasonMessage" from="reasonMessage + ' ' + responseMap.approval_message"/></if>
+            <iterate list="errors" key="errorCode" entry="errorList">
+                <set field="reasonMessage" value="${reasonMessage} (${errorCode}) ${errorList?.join(' ')}"/></iterate>
+            <set field="reasonMessage" from="reasonMessage.take(255)"/>
 
             <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                 in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId, 
