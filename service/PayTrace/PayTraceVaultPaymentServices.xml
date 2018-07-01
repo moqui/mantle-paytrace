@@ -138,7 +138,11 @@
             <set field="orderPartSeqId" from="payment.orderPartSeqId"/>
             <service-call name="mantle.order.OrderInfoServices.get#OrderDisplayInfo" in-map="[orderId:orderId]" out-map="orderInfo"/>
             <set field="orderPartInfo" from="orderPartSeqId ? orderInfo.orderPartInfoList.find({ it.orderPart.orderPartSeqId == orderPartSeqId }) : orderInfo.orderPartInfoList.first()"/>
-            
+
+            <!-- Get country Geo, need 2 letter ISO-3166 code -->
+            <entity-find-one entity-name="moqui.basic.Geo" value-field="countryGeo">
+                <field-map field-name="geoId" from="orderPartInfo.postalAddress?.countryGeoId ?: 'USA'"/></entity-find-one>
+
             <set field="lineItems" from="[]"/>
             <set field="orderDiscount" from="0.0"/>
             <set field="orderTaxAmount" from="0.0"/>
@@ -337,9 +341,9 @@
                     merchant_tax_id:taxIdentVendor?.idValue, customer_tax_id: taxIdentCustomer?.idValue,
                     discount_amount:orderDiscount.abs(),
                     freight_amount:freightAmount, additional_tax_amount:freightTax,
-                    additional_tax_rate: (freightTax.abs().multiply(100.0).divide(freightAmount, 2, BigDecimal.ROUND_HALF_UP)),
+                    additional_tax_rate: (freightAmount ? freightTax.abs().multiply(100.0).divide(freightAmount, 2, BigDecimal.ROUND_HALF_UP) : 0.0),
                     source_address:[zip:postalAddress.postalCode],
-                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:orderPartInfo.postalAddress?.countryGeoId],
+                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:countryGeo?.geoCodeAlpha2],
                     line_items:lineItems]"/>
                 <set field="typePath" value="visa"/>
             </if>
@@ -355,7 +359,7 @@
                     tax_amount: (orderTaxAmount == 0.0 ? -1 : orderTaxAmount),
                     freight_amount:freightAmount, additional_tax_amount:freightTax, additional_tax_included:(freightTax &gt; 0.0),
                     source_address:[zip:postalAddress.postalCode],
-                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:orderPartInfo.postalAddress?.countryGeoId],
+                    shipping_address:[zip:orderPartInfo.postalAddress?.postalCode, country:countryGeo?.geoCodeAlpha2],
                     line_items:lineItems]"/>
                 <set field="typePath" value="mastercard"/>
             </if>
