@@ -75,15 +75,9 @@
 
             <set field="paymentOperationEnumId" value="PgoAuthorize"/>
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
-
-            <!-- NOTE: only send for larger amounts? -->
-            <if condition="payment.orderId &amp;&amp; creditCard.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
-                <!-- NOTE: called async for performance reasons, secondary priority to auth, and to keep errors from causing problems with the auth -->
-                <service-call name="PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData" async="true"
-                        in-map="[paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, accessToken:accessToken]"/>
-            </if>
         </actions>
     </service>
+
     <service verb="send" noun="LevelThreeData" authenticate="anonymous-all">
         <!-- NOTE: anonymous-all so that can be called async, do not expose externally -->
         <in-parameters>
@@ -399,6 +393,7 @@
             <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
                 <return error="true" message="Cannot capture payment ${paymentId}, not a Credit Card payment."/>
             </if>
+            <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
 
             <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
             <if condition="!paymentMethod.gatewayCimId">
@@ -422,10 +417,11 @@
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
             <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
-                
+            <set field="accessToken" from="token.token.access_token"/>
+
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Authorization", "Bearer ${accessToken}")
                         .addHeader("Content-Type", "application/json").jsonObject(requestMap)
                 restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
                         .path("transactions").path("authorization").path("capture").build()
@@ -440,7 +436,15 @@
             <log message="PayTrace Capture response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <set field="paymentOperationEnumId" value="PgoCapture"/>
+            <!-- returns paymentGatewayResponseId, resultSuccess, resultDeclined -->
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
+
+            <!-- NOTE: only send for larger amounts? -->
+            <if condition="resultSuccess == 'Y' &amp;&amp; payment.orderId &amp;&amp; creditCard?.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
+                <!-- NOTE: called async for performance reasons, secondary priority to auth, and to keep errors from causing problems with the auth -->
+                <script>ec.service.special().name("PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData")
+                        .parameters([paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, accessToken:accessToken]).registerOnCommit()</script>
+            </if>
         </actions>
     </service>
     <service verb="authorizeAndCapture" noun="Payment">
@@ -459,6 +463,7 @@
             <if condition="paymentMethod?.paymentMethodTypeEnumId != 'PmtCreditCard'">
                 <return error="true" message="Cannot authorize and capture payment ${paymentId}, not a Credit Card payment."/>
             </if>
+            <set field="creditCard" from="payment.'mantle.account.method.CreditCard'"/>
 
             <!-- if no gatewayCimId, store the PaymentMethod on CIM -->
             <if condition="!paymentMethod.gatewayCimId">
@@ -477,6 +482,7 @@
             <if condition="pgpt == null"><return error="true" message="No PaymentGatewayPayTrace found with ID ${paymentGatewayConfigId}"/></if>
 
             <service-call name="PayTrace.PayTraceVaultPaymentServices.login#PayTrace" in-map="context" out-map="token"/>
+            <set field="accessToken" from="token.token.access_token"/>
 
             <!-- assemble the full request Map -->
             <set field="requestMap" from="[amount:payment.amount, customer_id:paymentMethod.gatewayCimId, integrator_id:pgpt.integratorId, invoice_id:payment.orderId]"/>
@@ -485,7 +491,7 @@
 
             <script><![CDATA[
                 org.moqui.util.RestClient restClient = ec.service.rest().method(org.moqui.util.RestClient.POST)
-                        .addHeader("Authorization", "Bearer ${token.token.access_token}")
+                        .addHeader("Authorization", "Bearer ${accessToken}")
                         .addHeader("Content-Type", "application/json").jsonObject(requestMap)
                 restClient.uri().protocol("https").host(pgpt.hostName ?: "api.paytrace.com").port(443).path(pgpt.apiVersion ?: "v1")
                         .path("transactions").path("sale").path("by_customer").build()
@@ -500,7 +506,15 @@
             <log message="PayTrace Auth and Capture response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
             <set field="paymentOperationEnumId" value="PgoAuthAndCapture"/>
+            <!-- returns paymentGatewayResponseId, resultSuccess, resultDeclined -->
             <service-call name="PayTrace.PayTraceVaultPaymentServices.save#Response" in-map="context" out-map="context"/>
+
+            <!-- NOTE: only send for larger amounts? -->
+            <if condition="resultSuccess == 'Y' &amp;&amp; payment.orderId &amp;&amp; creditCard?.creditCardTypeEnumId in ['CctVisa', 'CctMastercard']">
+                <!-- NOTE: called async for performance reasons, secondary priority to auth, and to keep errors from causing problems with the auth -->
+                <script>ec.service.special().name("PayTrace.PayTraceVaultPaymentServices.send#LevelThreeData")
+                        .parameters([paymentId:paymentId, paymentGatewayConfigId:paymentGatewayConfigId, accessToken:accessToken]).registerOnCommit()</script>
+            </if>
         </actions>
     </service>
     <service verb="refund" noun="Payment">
@@ -644,46 +658,65 @@
                     return
                 }
                 responseMap = restResponse.jsonObject()
+                if (responseMap?.transactions) transactionMap = responseMap.transactions.first()
             ]]></script>
             <log message="PayTrace Transaction Status response for payment ${paymentId}:\n${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(responseMap))}"/>
 
-            <!-- PayTrace transactionType values and corresponding Payment statusId to determine needed action:
-            
-                SALE           PmntDelivered
-                AUTHORIZATION  PmntAuthorized
-                REFUND         PmntConfirmed 
-                VOID           PmntVoid
-                CAPTURE        PmntDelivered
-                FORCESALE      PmntDelivered
-                SETTLED        PmntConfirmed 
-                PENDING        PmntDelivered
-                DECLINED       PmntDeclined
-                -->
-                
-            <set field="transactionStatus" from="responseMap.transaction_type"/>
+            <set field="transactionStatus" from="transactionMap?.status_code?.toUpperCase()"/>
+            <set field="statusMessageUpper" from="transactionMap?.status_message?.toUpperCase()"/>
             <if condition="transactionStatus">
-                <set field="payTraceStatusMap" from="[AUTHORIZATION:'PmntAuthorized', 
-                    REFUND:'PmntConfirmed', SALE:'PmntDelivered',FORCESALE:'PmntDelivered',  
-                    CAPTURE:'PmntDelivered', SETTLED:'PmntConfirmed', PENDING:'PmntDelivered',
-                    DECLINED:'PmntDeclined', VOID:'PmntVoid']"/>
-                <set field="gatewayStatusId" from="payTraceStatusMap.get(transactionStatus.trim())"/>
+                <!-- status_code (https://developers.paytrace.com/support/home#Transaction_Detail_Record_Schema):
+                -GB or Settled indicates the transaction has been settled, and the batch number will be appended to the status.
+                -Y indicates the transaction will be settled that evening.
+                -N indicates the transaction was voided or declined. (NOTE: or Authorized)
+                -->
+
+                <set field="gatewayStatusId" from="null"/>
+                <if condition="transactionStatus == 'Y'"><then>
+                    <!-- status_message values observed:
+                        'Pending Settlement' PmntDelivered
+                    -->
+                    <set field="gatewayStatusId" value="PmntDelivered"/>
+                </then><else-if condition="transactionStatus == 'N'">
+                    <!-- status_message values observed:
+                        'Authorization Only' PmntAuthorized
+                    -->
+                    <!-- could be PmntAuthorized, PmntVoid, or PmntDeclined, try to distinguish with statusMessage -->
+                    <if condition="statusMessageUpper?.contains('AUTH')"><then>
+                        <set field="gatewayStatusId" value="PmntAuthorized"/>
+                    </then><else-if condition="statusMessageUpper?.contains('VOID')">
+                        <set field="gatewayStatusId" value="PmntVoid"/>
+                    </else-if><else-if condition="statusMessageUpper?.contains('DECL')">
+                        <set field="gatewayStatusId" value="PmntDeclined"/>
+                    </else-if></if>
+                </else-if><else-if condition="transactionStatus.contains('GB') || transactionStatus.contains('SETTLED')">
+                    <set field="gatewayStatusId" value="PmntConfirmed"/>
+                </else-if></if>
             </if>
 
-            <set field="referenceNum" from="responseMap.transactions?.transaction_id"/>
+            <if condition="transactionMap?.settled">
+                <!-- From docs: The date and time when the transaction was settled/batched. Format will be a general date (i.e. MM/DD/YYYY HH:MM:SS) -->
+                <!-- NOTE: format annoying, non-standard, and time zone? -->
+                <!-- Example seen: '7/3/2018 5:06:57 PM' -->
+                <set field="settlementDate" from="ec.l10n.parseTimestamp(transactionMap.settled, 'M/d/yyyy h:m:ss a')"/>
+            </if>
+            <!-- <if condition="transactionMap?.created?.at"><log message="TX created at [${transactionMap?.created?.at}] ${ec.l10n.parseTimestamp(transactionMap?.created?.at, 'M/d/yyyy h:m:ss a')}"/></if> -->
+
+            <set field="referenceNum" from="transactionMap?.transaction_id"/>
 
             <if condition="!gatewayStatusId || gatewayStatusId != payment.statusId">
                 <!-- save PaymentGatewayResponse including transaction status -->
                 <set field="responseCode" from="responseMap.success"/>
-                <set field="reasonCode" from="responseMap.transactions?.approval_code"/>
-                <set field="reasonMessage" from="responseMap.transactions.approval_message"/>
-                <set field="statusCode" from="responseMap.transactions?.status_code"/>
+                <set field="approvalCode" from="transactionMap?.approval_code"/>
+                <set field="reasonCode" from="transactionMap?.status_code"/>
+                <set field="reasonMessage" from="transactionMap?.status_message"/>
 
                 <service-call name="create#mantle.account.method.PaymentGatewayResponse" out-map="context"
                         in-map="[paymentGatewayConfigId:paymentGatewayConfigId, paymentOperationEnumId:paymentOperationEnumId, 
                         paymentId:payment.paymentId, paymentMethodId:payment.paymentMethodId, referenceNum:referenceNum, 
                         amount:payment.amount, amountUomId:payment.amountUomId, transactionDate:ec.user.nowTimestamp, 
                         responseCode:responseCode, reasonCode:reasonCode, reasonMessage:reasonMessage,
-                        resultError:(responseCode ? 'N' : 'Y'), resultDeclined:(statusCode == 'N' ? 'Y' : 'N'), transactionStatus:transactionStatus]"/>
+                        resultError:(responseCode ? 'N' : 'Y'), resultDeclined:(reasonCode == 'N' ? 'Y' : 'N'), transactionStatus:transactionStatus]"/>
             </if>
         </actions>      
     </service>
@@ -698,6 +731,8 @@
         </in-parameters>
         <out-parameters>
             <parameter name="paymentGatewayResponseId"/>
+            <parameter name="resultSuccess"/>
+            <parameter name="resultDeclined"/>
         </out-parameters>
         <actions>
             <entity-find-one entity-name="mantle.account.payment.Payment" value-field="payment"/>
@@ -716,6 +751,9 @@
             <set field="badExpireMonth" from="errors?.'43'"/>
             <set field="badExpireYear" from="errors?.'44'"/>
 
+            <set field="resultSuccess" from="reasonCode in [101, 106, 108, 109, 112, 120, 122, 124] ? 'Y' : 'N'"/>
+            <set field="resultDeclined" from="reasonCode in [102, 103, 107, 110, 113, 125] ? 'Y' : 'N'"/>
+
             <!-- add other messages to reasonMessage -->
             <if condition="responseMap.approval_message"><set field="reasonMessage" from="reasonMessage + ' ' + responseMap.approval_message"/></if>
             <iterate list="errors" key="errorCode" entry="errorList">
@@ -730,8 +768,7 @@
                     reasonCode:reasonCode, reasonMessage:reasonMessage,
                     avsResult:avsResult, cvResult:cvResult,
                     transactionDate:ec.user.nowTimestamp,
-                    resultSuccess:(reasonCode in [101, 106, 108, 109, 112, 120, 122, 124] ? 'Y' : 'N'),
-                    resultDeclined:(reasonCode in [102, 103, 107, 110, 113, 125] ? 'Y' : 'N'),
+                    resultSuccess:resultSuccess, resultDeclined:resultDeclined,
                     resultError:(reasonCode == 1 ? 'Y' : 'N'),
                     resultBadExpire:(badExpireMonth || badExpireYear ? 'Y' : 'N'),
                     resultBadCardNumber:(badCardNumber ? 'Y' : 'N')]"/>
